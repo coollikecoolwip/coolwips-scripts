@@ -2,7 +2,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
--- Colors
+-- Colors for roles
 local ROLE_COLORS = {
 	Murderer = Color3.fromRGB(255, 0, 0),
 	Sheriff = Color3.fromRGB(0, 170, 255),
@@ -10,7 +10,7 @@ local ROLE_COLORS = {
 	Gun = Color3.fromRGB(0, 255, 0),
 }
 
--- Store ESP boxes
+-- Track ESP objects
 local espObjects = {}
 
 local function getRole(player)
@@ -25,37 +25,48 @@ end
 
 local function addESP(player)
 	if espObjects[player] then return end
-	local box = Instance.new("Highlight")
-	box.Name = "MM2ESP"
-	box.Adornee = player.Character
-	box.FillTransparency = 0.75
-	box.OutlineTransparency = 0
-	box.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	box.Parent = game:GetService("CoreGui")
-	espObjects[player] = box
+	if not player.Character or not player.Character:FindFirstChild("Head") then return end
 
-	local nameBillboard = Instance.new("BillboardGui")
-	nameBillboard.Name = "NameDisplay"
-	nameBillboard.Size = UDim2.new(0, 200, 0, 50)
-	nameBillboard.AlwaysOnTop = true
-	nameBillboard.StudsOffset = Vector3.new(0, 3, 0)
-	nameBillboard.Parent = player.Character:WaitForChild("Head")
+	local char = player.Character
 
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(1, 0, 1, 0)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	nameLabel.TextStrokeTransparency = 0
-	nameLabel.TextScaled = true
-	nameLabel.Text = player.Name
-	nameLabel.Font = Enum.Font.SourceSansBold
-	nameLabel.Parent = nameBillboard
+	-- Highlight
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "MM2ESP"
+	highlight.Adornee = char
+	highlight.FillTransparency = 0.75
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = game:GetService("CoreGui")
+	espObjects[player] = highlight
+
+	-- Name label
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "RoleLabel"
+	billboard.Size = UDim2.new(0, 200, 0, 40)
+	billboard.AlwaysOnTop = true
+	billboard.StudsOffset = Vector3.new(0, 3, 0)
+	billboard.Parent = char.Head
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeTransparency = 0
+	label.TextScaled = true
+	label.Font = Enum.Font.SourceSansBold
+	label.Text = player.Name
+	label.Parent = billboard
 end
 
 local function removeESP(player)
 	if espObjects[player] then
 		espObjects[player]:Destroy()
 		espObjects[player] = nil
+	end
+
+	if player.Character and player.Character:FindFirstChild("Head") then
+		local old = player.Character.Head:FindFirstChild("RoleLabel")
+		if old then old:Destroy() end
 	end
 end
 
@@ -76,12 +87,12 @@ local function updateESP()
 	end
 end
 
--- Show dropped gun
 local function showDroppedGun()
-	for _, v in pairs(workspace:GetDescendants()) do
-		if v:IsA("Tool") and v.Name == "GunDrop" and not v:FindFirstChild("ESP") then
-			local part = v:FindFirstChildWhichIsA("BasePart")
+	for _, item in ipairs(workspace:GetDescendants()) do
+		if item:IsA("Tool") and item.Name == "GunDrop" and not item:FindFirstChild("ESP") then
+			local part = item:FindFirstChildWhichIsA("BasePart")
 			if part then
+				-- Outline
 				local hl = Instance.new("Highlight")
 				hl.Name = "ESP"
 				hl.Adornee = part
@@ -89,13 +100,31 @@ local function showDroppedGun()
 				hl.FillTransparency = 0.5
 				hl.OutlineTransparency = 0
 				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-				hl.Parent = v
+				hl.Parent = item
+
+				-- Label
+				local billboard = Instance.new("BillboardGui")
+				billboard.Name = "GunLabel"
+				billboard.Size = UDim2.new(0, 100, 0, 40)
+				billboard.StudsOffset = Vector3.new(0, 2, 0)
+				billboard.AlwaysOnTop = true
+				billboard.Parent = part
+
+				local label = Instance.new("TextLabel")
+				label.Size = UDim2.new(1, 0, 1, 0)
+				label.BackgroundTransparency = 1
+				label.TextColor3 = ROLE_COLORS.Gun
+				label.TextStrokeTransparency = 0
+				label.TextScaled = true
+				label.Text = "Gun"
+				label.Font = Enum.Font.SourceSansBold
+				label.Parent = billboard
 			end
 		end
 	end
 end
 
--- Reset on teleport (next round)
+-- Reset ESP when teleporting
 LocalPlayer.CharacterAdded:Connect(function()
 	for player, esp in pairs(espObjects) do
 		if esp then esp:Destroy() end
@@ -103,6 +132,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 	espObjects = {}
 end)
 
+-- Continuous update
 RunService.RenderStepped:Connect(function()
 	updateESP()
 	showDroppedGun()
