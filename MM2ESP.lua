@@ -54,7 +54,7 @@ local function addESP(player)
 	label.TextStrokeTransparency = 0
 	label.TextScaled = true
 	label.Font = Enum.Font.SourceSansBold
-	label.Text = player.Name
+	label.Text = role
 	label.Parent = billboard
 end
 
