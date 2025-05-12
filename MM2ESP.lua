@@ -1,91 +1,109 @@
--- MM2 Role-Based ESP (Stable Version)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
-local espFolder = Instance.new("Folder", Workspace)
-espFolder.Name = "MM2_ESP"
+-- Colors
+local ROLE_COLORS = {
+	Murderer = Color3.fromRGB(255, 0, 0),
+	Sheriff = Color3.fromRGB(0, 170, 255),
+	Innocent = Color3.fromRGB(150, 150, 150),
+	Gun = Color3.fromRGB(0, 255, 0),
+}
 
-local knownRoles = {}
-
-local function clearESP()
-	for _, v in pairs(espFolder:GetChildren()) do
-		v:Destroy()
-	end
-end
-
-local function createHighlight(character, color)
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "ESPHighlight"
-	highlight.Adornee = character
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.FillColor = color
-	highlight.FillTransparency = 0.5
-	highlight.OutlineTransparency = 1
-	highlight.Parent = espFolder
-end
-
-local function createBillboard(part, text, color)
-	local billboard = Instance.new("BillboardGui")
-	billboard.Adornee = part
-	billboard.Size = UDim2.new(0, 100, 0, 30)
-	billboard.StudsOffset = Vector3.new(0, 2, 0)
-	billboard.AlwaysOnTop = true
-	billboard.Name = "ESPBillboard"
-	billboard.Parent = espFolder
-
-	local label = Instance.new("TextLabel", billboard)
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextColor3 = color
-	label.TextScaled = true
-	label.Font = Enum.Font.SourceSansBold
-end
+-- Store ESP boxes
+local espObjects = {}
 
 local function getRole(player)
-	if player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
-		return "Sheriff"
-	elseif player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
+	if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
 		return "Murderer"
+	elseif player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
+		return "Sheriff"
 	else
 		return "Innocent"
 	end
 end
 
-local roleColors = {
-	Sheriff = Color3.fromRGB(0, 170, 255),
-	Murderer = Color3.fromRGB(255, 0, 0),
-	Innocent = Color3.fromRGB(128, 128, 128)
-}
+local function addESP(player)
+	if espObjects[player] then return end
+	local box = Instance.new("Highlight")
+	box.Name = "MM2ESP"
+	box.Adornee = player.Character
+	box.FillTransparency = 0.75
+	box.OutlineTransparency = 0
+	box.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	box.Parent = game:GetService("CoreGui")
+	espObjects[player] = box
+
+	local nameBillboard = Instance.new("BillboardGui")
+	nameBillboard.Name = "NameDisplay"
+	nameBillboard.Size = UDim2.new(0, 200, 0, 50)
+	nameBillboard.AlwaysOnTop = true
+	nameBillboard.StudsOffset = Vector3.new(0, 3, 0)
+	nameBillboard.Parent = player.Character:WaitForChild("Head")
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(1, 0, 1, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.TextColor3 = Color3.new(1, 1, 1)
+	nameLabel.TextStrokeTransparency = 0
+	nameLabel.TextScaled = true
+	nameLabel.Text = player.Name
+	nameLabel.Font = Enum.Font.SourceSansBold
+	nameLabel.Parent = nameBillboard
+end
+
+local function removeESP(player)
+	if espObjects[player] then
+		espObjects[player]:Destroy()
+		espObjects[player] = nil
+	end
+end
 
 local function updateESP()
-	clearESP()
-
-	for _, player in pairs(Players:GetPlayers()) do
+	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			addESP(player)
 			local role = getRole(player)
-			if knownRoles[player] ~= role then
-				knownRoles[player] = role
+			local esp = espObjects[player]
+			if esp then
+				esp.Adornee = player.Character
+				esp.FillColor = ROLE_COLORS[role]
+				esp.OutlineColor = ROLE_COLORS[role]
 			end
-
-			local color = roleColors[knownRoles[player] or "Innocent"]
-			createHighlight(player.Character, color)
-			createBillboard(player.Character:FindFirstChild("HumanoidRootPart"), knownRoles[player], color)
+		else
+			removeESP(player)
 		end
 	end
+end
 
-	-- Dropped gun
-	local droppedGun = Workspace:FindFirstChild("GunDrop")
-	if droppedGun then
-		createHighlight(droppedGun, Color3.fromRGB(0, 255, 0))
-		createBillboard(droppedGun, "Dropped Gun", Color3.fromRGB(0, 255, 0))
+-- Show dropped gun
+local function showDroppedGun()
+	for _, v in pairs(workspace:GetDescendants()) do
+		if v:IsA("Tool") and v.Name == "GunDrop" and not v:FindFirstChild("ESP") then
+			local part = v:FindFirstChildWhichIsA("BasePart")
+			if part then
+				local hl = Instance.new("Highlight")
+				hl.Name = "ESP"
+				hl.Adornee = part
+				hl.FillColor = ROLE_COLORS.Gun
+				hl.FillTransparency = 0.5
+				hl.OutlineTransparency = 0
+				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				hl.Parent = v
+			end
+		end
 	end
 end
 
--- Scan every 1.5 seconds to prevent blinking
-while true do
+-- Reset on teleport (next round)
+LocalPlayer.CharacterAdded:Connect(function()
+	for player, esp in pairs(espObjects) do
+		if esp then esp:Destroy() end
+	end
+	espObjects = {}
+end)
+
+RunService.RenderStepped:Connect(function()
 	updateESP()
-	task.wait(1.5)
-end
+	showDroppedGun()
+end)
