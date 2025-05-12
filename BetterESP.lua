@@ -12,6 +12,14 @@ local function createESP(target, color, name, isNPC)
         billboard.Adornee = target.Head
         billboard.Parent = target.Head
 
+        local outlineFrame = Instance.new("Frame")
+        outlineFrame.Size = UDim2.new(1, 10, 1, 10)
+        outlineFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        outlineFrame.BackgroundTransparency = 0.6
+        outlineFrame.Position = UDim2.new(0, -5, 0, -5)
+        outlineFrame.BorderSizePixel = 0
+        outlineFrame.Parent = billboard
+
         local label = Instance.new("TextLabel", billboard)
         label.Size = UDim2.new(1, 0, 1, 0)
         label.BackgroundTransparency = 1
@@ -20,7 +28,7 @@ local function createESP(target, color, name, isNPC)
         label.Text = name
         label.Font = Enum.Font.SourceSansBold
         label.TextSize = 14
-        
+
         if isNPC then
             label.Text = "NPC - " .. label.Text
         end
@@ -35,7 +43,6 @@ local function getTeamColor(player)
 end
 
 RunService.RenderStepped:Connect(function()
-    -- ESP for players
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
             local dist = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
@@ -45,7 +52,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ESP for NPCs
     for _, npc in pairs(workspace:GetDescendants()) do
         if npc:IsA("Model") and not Players:GetPlayerFromCharacter(npc) and npc:FindFirstChild("Humanoid") and npc:FindFirstChild("HumanoidRootPart") then
             local dist = (LocalPlayer.Character.HumanoidRootPart.Position - npc.HumanoidRootPart.Position).Magnitude
