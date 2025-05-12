@@ -1,88 +1,85 @@
--- Services
+-- MM2 Role-Based ESP
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
-local Camera = Workspace.CurrentCamera
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
-local ESP = {}
 
--- Helper function to create an outline around players and dropped guns
-local function createOutline(part, color)
-    local highlight = Instance.new("Highlight")
-    highlight.Parent = part
-    highlight.FillTransparency = 1
-    highlight.OutlineTransparency = 0
-    highlight.OutlineColor = color
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    return highlight
+local espFolder = Instance.new("Folder", Workspace)
+espFolder.Name = "MM2_ESP"
+
+local function clearESP()
+	for _, v in pairs(espFolder:GetChildren()) do
+		v:Destroy()
+	end
 end
 
--- Function to reset ESP when teleporting or round change
-local function resetESP()
-    for _, espElement in pairs(ESP) do
-        espElement:Destroy()
-    end
-    ESP = {}
+local function createHighlight(character, color)
+	local highlight = Instance.new("Highlight")
+	highlight.Adornee = character
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.FillColor = color
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 1
+	highlight.Parent = espFolder
 end
 
--- Function to update ESP for players
-local function updatePlayerESP(player)
-    local char = player.Character
-    if char and player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = char.HumanoidRootPart
-        local role = player:FindFirstChild("PlayerData") and player.PlayerData:FindFirstChild("Role")
-        
-        -- Ensure the role exists
-        if role then
-            local color
-            if role.Value == "Murderer" then
-                color = Color3.fromRGB(255, 0, 0)  -- Red outline for Murderer
-            elseif role.Value == "Sheriff" then
-                color = Color3.fromRGB(0, 0, 255)  -- Blue outline for Sheriff
-            elseif role.Value == "Innocent" then
-                color = Color3.fromRGB(169, 169, 169)  -- Gray outline for Innocents
-            end
-            
-            if color then
-                -- Create an outline for the player's character
-                ESP[player] = createOutline(hrp, color)
-            end
-        end
-    end
+local function createBillboard(part, text, color)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Adornee = part
+	billboard.Size = UDim2.new(0, 100, 0, 30)
+	billboard.StudsOffset = Vector3.new(0, 2, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Parent = espFolder
+
+	local label = Instance.new("TextLabel", billboard)
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color
+	label.TextScaled = true
+	label.Font = Enum.Font.SourceSansBold
 end
 
--- Function to update ESP for dropped guns
-local function updateDroppedGunESP()
-    for _, item in pairs(Workspace:GetChildren()) do
-        if item:IsA("Tool") and item.Name == "Gun" then
-            local gunHandle = item:FindFirstChild("Handle")
-            if gunHandle then
-                -- Create green outline for dropped gun
-                createOutline(gunHandle, Color3.fromRGB(0, 255, 0))
-            end
-        end
-    end
+local function getRole(player)
+	if player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
+		return "Sheriff"
+	elseif player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
+		return "Murderer"
+	else
+		return "Innocent"
+	end
 end
 
--- Main loop to update ESP
 RunService.RenderStepped:Connect(function()
-    -- Reset ESP if player is respawned or teleported
-    if LocalPlayer.Character.Humanoid.Health == 0 or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        resetESP()
-    end
+	clearESP()
 
-    -- Update ESP for all players
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            updatePlayerESP(player)
-        end
-    end
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local role = getRole(player)
+			local color = Color3.new(0.5, 0.5, 0.5) -- Default: gray
 
-    -- Update ESP for dropped guns
-    updateDroppedGunESP()
+			if role == "Murderer" then
+				color = Color3.fromRGB(255, 0, 0)
+			elseif role == "Sheriff" then
+				color = Color3.fromRGB(0, 170, 255)
+			end
+
+			createHighlight(player.Character, color)
+			createBillboard(player.Character:FindFirstChild("HumanoidRootPart"), role, color)
+		end
+	end
+
+	-- Show dropped gun
+	local droppedGun = Workspace:FindFirstChild("GunDrop")
+	if droppedGun then
+		createHighlight(droppedGun, Color3.fromRGB(0, 255, 0))
+		createBillboard(droppedGun, "Dropped Gun", Color3.fromRGB(0, 255, 0))
+	end
 end)
 
--- Reset ESP when the player spawns or teleports
-LocalPlayer.CharacterAdded:Connect(function()
-    resetESP()
+-- Cleanup ESP on teleport/reset
+Workspace.ChildAdded:Connect(function(child)
+	if child:IsA("Model") and Players:GetPlayerFromCharacter(child) == nil then
+		clearESP()
+	end
 end)
