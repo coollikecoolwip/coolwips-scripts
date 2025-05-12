@@ -39,7 +39,9 @@ local function addESP(player)
 	highlight.Parent = game:GetService("CoreGui")
 	espObjects[player] = highlight
 
-	-- Name label
+	-- Role label instead of player name
+	local role = getRole(player)
+
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "RoleLabel"
 	billboard.Size = UDim2.new(0, 200, 0, 40)
@@ -54,7 +56,7 @@ local function addESP(player)
 	label.TextStrokeTransparency = 0
 	label.TextScaled = true
 	label.Font = Enum.Font.SourceSansBold
-	label.Text = role
+	label.Text = role  -- Show the player's role
 	label.Parent = billboard
 end
 
