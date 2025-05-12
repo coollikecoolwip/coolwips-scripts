@@ -1,76 +1,39 @@
 local Players = game:GetService("Players")
-local Teams = game:GetService("Teams")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
 
--- Create or update ESP for a character
-local function applyESP(character, name)
-	local head = character:FindFirstChild("Head")
-	if not head then return end
+local function applyHighlight(model, color)
+	if not model:FindFirstChild("HumanoidRootPart") then return end
+	if model:FindFirstChild("ESP_Highlight") then return end
 
-	-- Create or update Highlight
-	local highlight = character:FindFirstChild("ESP_Highlight") or Instance.new("Highlight")
+	local highlight = Instance.new("Highlight")
 	highlight.Name = "ESP_Highlight"
-	highlight.Adornee = character
-	highlight.FillTransparency = 0.5
+	highlight.FillTransparency = 1
 	highlight.OutlineTransparency = 0
-	highlight.Parent = character
-
-	-- Create Billboard for name
-	local tag = head:FindFirstChild("NameTag")
-	if not tag then
-		tag = Instance.new("BillboardGui")
-		tag.Name = "NameTag"
-		tag.Adornee = head
-		tag.Size = UDim2.new(0, 100, 0, 20)
-		tag.StudsOffset = Vector3.new(0, 2, 0)
-		tag.AlwaysOnTop = true
-		tag.Parent = head
-
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1, 0, 1, 0)
-		label.BackgroundTransparency = 1
-		label.TextColor3 = Color3.new(1, 1, 1)
-		label.TextStrokeTransparency = 0
-		label.Font = Enum.Font.SourceSansBold
-		label.TextScaled = true
-		label.Text = name
-		label.Parent = tag
-	end
+	highlight.OutlineColor = color
+	highlight.Adornee = model
+	highlight.Parent = model
 end
 
--- Get the TeamColor of a character (NPC or player)
-local function getCharacterTeamColor(character)
-	local player = Players:GetPlayerFromCharacter(character)
-	if player and player.Team then
-		return player.Team.TeamColor.Color
-	end
+RunService.RenderStepped:Connect(function()
+	local char = LocalPlayer.Character
+	if not (char and char:FindFirstChild("HumanoidRootPart")) then return end
+	local pos = char.HumanoidRootPart.Position
 
-	-- For NPCs with StringValue "Team"
-	local teamTag = character:FindFirstChild("Team")
-	if teamTag and typeof(teamTag.Value) == "string" then
-		local teamObj = Teams:FindFirstChild(teamTag.Value)
-		if teamObj then
-			return teamObj.TeamColor.Color
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			if (player.Character.HumanoidRootPart.Position - pos).Magnitude < 1000 then
+				applyHighlight(player.Character, Color3.fromRGB(255, 165, 0)) -- Orange
+			end
 		end
 	end
 
-	return Color3.fromRGB(200, 200, 200)
-end
-
--- Update loop
-RunService.RenderStepped:Connect(function()
-	for _, model in Workspace:GetDescendants() do
+	for _, model in ipairs(workspace:GetDescendants()) do
 		if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
-			local player = Players:GetPlayerFromCharacter(model)
-			local name = model.Name
-			applyESP(model, name)
-
-			local color = getCharacterTeamColor(model)
-			local highlight = model:FindFirstChild("ESP_Highlight")
-			if highlight then
-				highlight.FillColor = color
-				highlight.OutlineColor = Color3.new(1, 1, 1)
+			if not Players:GetPlayerFromCharacter(model) then
+				if (model.HumanoidRootPart.Position - pos).Magnitude < 1000 then
+					applyHighlight(model, Color3.fromRGB(255, 0, 0)) -- Red
+				end
 			end
 		end
 	end
