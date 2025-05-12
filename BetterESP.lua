@@ -33,6 +33,17 @@ local function createESP(target, color, name, isNPC)
             label.Text = "NPC - " .. label.Text
         end
     end
+
+    -- Add outline to NPC models
+    if isNPC then
+        if target:FindFirstChild("HumanoidRootPart") then
+            local outline = Instance.new("SelectionBox")
+            outline.Adornee = target
+            outline.LineThickness = 0.1
+            outline.Color3 = Color3.fromRGB(255, 165, 0) -- Orange outline for NPCs
+            outline.Parent = target
+        end
+    end
 end
 
 local function getTeamColor(player)
