@@ -1,100 +1,87 @@
+-- Services
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
+local ESP = {}
 
-local roleColors = {
-    Murderer = Color3.fromRGB(255, 0, 0),
-    Sheriff = Color3.fromRGB(0, 170, 255),
-    Innocent = Color3.fromRGB(120, 120, 120)
-}
+-- Create function for drawing an outline around the player or object
+local function createOutline(part, color)
+    local outline = Instance.new("Highlight")
+    outline.Parent = part
+    outline.FillTransparency = 1
+    outline.OutlineTransparency = 0
+    outline.OutlineColor = color
+    outline.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    return outline
+end
 
-local roleTracker = {}
+-- Function to reset all ESP elements
+local function resetESP()
+    for _, espElement in pairs(ESP) do
+        espElement:Destroy()
+    end
+    ESP = {}
+end
 
-local function clearESP(player)
-    if player.Character then
-        for _, part in pairs(player.Character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                local esp = part:FindFirstChild("ESPBox")
-                if esp then esp:Destroy() end
+-- Function to handle player's role change
+local function updateESPForPlayer(player)
+    local char = player.Character
+    if not char or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+
+    local hrp = char.HumanoidRootPart
+    local role = player:FindFirstChild("PlayerData") and player.PlayerData:FindFirstChild("Role")
+
+    if role then
+        local color
+        if role.Value == "Murderer" then
+            color = Color3.fromRGB(255, 0, 0)  -- Red for murderer
+        elseif role.Value == "Sheriff" then
+            color = Color3.fromRGB(0, 0, 255)  -- Blue for sheriff
+        elseif role.Value == "Innocent" then
+            color = Color3.fromRGB(169, 169, 169)  -- Gray for innocent
+        end
+
+        if color then
+            -- Create an outline around the character
+            ESP[player] = createOutline(hrp, color)
+        end
+    end
+end
+
+-- Function to handle dropped gun
+local function updateDroppedGunESP()
+    for _, item in pairs(Workspace:GetChildren()) do
+        if item:IsA("Tool") and item.Name == "Gun" then
+            local gunPosition = item.Handle
+            if gunPosition then
+                -- Create green outline for the dropped gun
+                createOutline(gunPosition, Color3.fromRGB(0, 255, 0))
             end
         end
     end
 end
 
-local function createESP(player, color)
-    if not player.Character then return end
-    for _, part in pairs(player.Character:GetDescendants()) do
-        if part:IsA("BasePart") and not part:IsDescendantOf(player.Character:FindFirstChildOfClass("Tool")) then
-            if not part:FindFirstChild("ESPBox") then
-                local box = Instance.new("BoxHandleAdornment")
-                box.Name = "ESPBox"
-                box.Adornee = part
-                box.AlwaysOnTop = true
-                box.ZIndex = 10
-                box.Size = part.Size
-                box.Transparency = 0.6
-                box.Color3 = color
-                box.Parent = part
-            end
+-- Main loop for checking and updating ESP
+RunService.RenderStepped:Connect(function()
+    -- Reset ESP if new round starts or player is teleported
+    if LocalPlayer.Character.Humanoid.Health == 0 or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        resetESP()
+    end
+
+    -- Update ESP for all players
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            updateESPForPlayer(player)
         end
     end
-end
 
-local function detectRoles()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local tool = player.Character:FindFirstChildOfClass("Tool")
-            if tool then
-                local name = tool.Name:lower()
-                if name:find("knife") then
-                    roleTracker[player] = "Murderer"
-                elseif name:find("gun") then
-                    roleTracker[player] = "Sheriff"
-                end
-            end
-        end
-    end
-end
-
-local function updateESP()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local role = roleTracker[player] or "Innocent"
-            createESP(player, roleColors[role])
-        end
-    end
-end
-
-local function onCharacterAdded(player)
-    task.delay(1, function()
-        clearESP(player)
-        roleTracker[player] = nil
-    end)
-end
-
-local function setupPlayer(player)
-    player.CharacterAdded:Connect(function()
-        onCharacterAdded(player)
-    end)
-    if player.Character then
-        onCharacterAdded(player)
-    end
-end
-
-Players.PlayerAdded:Connect(setupPlayer)
-for _, player in ipairs(Players:GetPlayers()) do
-    setupPlayer(player)
-end
-
-Workspace:GetPropertyChangedSignal("DistributedGameTime"):Connect(function()
-    roleTracker = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        clearESP(p)
-    end
+    -- Update ESP for dropped guns
+    updateDroppedGunESP()
 end)
 
-RunService.RenderStepped:Connect(function()
-    detectRoles()
-    updateESP()
+-- Ensure ESP resets when the player spawns or teleports
+LocalPlayer.CharacterAdded:Connect(function()
+    resetESP()
 end)
