@@ -1,72 +1,77 @@
 local Players = game:GetService("Players")
+local Teams = game:GetService("Teams")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
 
--- Function to create ESP with outline
-local function createESP(target, color, name, isNPC)
-    if target:FindFirstChild("Head") and not target.Head:FindFirstChild("ESP") then
-        -- Billboard GUI for the name label
-        local billboard = Instance.new("BillboardGui")
-        billboard.Name = "ESP"
-        billboard.AlwaysOnTop = true
-        billboard.Size = UDim2.new(0, 100, 0, 40)
-        billboard.StudsOffset = Vector3.new(0, 2, 0)
-        billboard.Adornee = target.Head
-        billboard.Parent = target.Head
+-- Create or update ESP for a character
+local function applyESP(character, name)
+	local head = character:FindFirstChild("Head")
+	if not head then return end
 
-        -- Background Frame to simulate outline
-        local outlineFrame = Instance.new("Frame")
-        outlineFrame.Size = UDim2.new(1, 10, 1, 10)
-        outlineFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0) -- Black outline
-        outlineFrame.BackgroundTransparency = 0.6
-        outlineFrame.Position = UDim2.new(0, -5, 0, -5)
-        outlineFrame.BorderSizePixel = 0
-        outlineFrame.Parent = billboard
+	-- Create or update Highlight
+	local highlight = character:FindFirstChild("ESP_Highlight") or Instance.new("Highlight")
+	highlight.Name = "ESP_Highlight"
+	highlight.Adornee = character
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 0
+	highlight.Parent = character
 
-        -- Label to display name
-        local label = Instance.new("TextLabel", billboard)
-        label.Size = UDim2.new(1, 0, 1, 0)
-        label.BackgroundTransparency = 1
-        label.TextColor3 = color
-        label.TextStrokeTransparency = 0
-        label.Text = name
-        label.Font = Enum.Font.SourceSansBold
-        label.TextSize = 14
+	-- Create Billboard for name
+	local tag = head:FindFirstChild("NameTag")
+	if not tag then
+		tag = Instance.new("BillboardGui")
+		tag.Name = "NameTag"
+		tag.Adornee = head
+		tag.Size = UDim2.new(0, 100, 0, 20)
+		tag.StudsOffset = Vector3.new(0, 2, 0)
+		tag.AlwaysOnTop = true
+		tag.Parent = head
 
-        -- Add "NPC" tag to NPCs
-        if isNPC then
-            label.Text = "NPC - " .. label.Text
-        end
-    end
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, 0, 1, 0)
+		label.BackgroundTransparency = 1
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextStrokeTransparency = 0
+		label.Font = Enum.Font.SourceSansBold
+		label.TextScaled = true
+		label.Text = name
+		label.Parent = tag
+	end
 end
 
--- Function to get team color for players
-local function getTeamColor(player)
-    if player.Team and player.Team.TeamColor then
-        return player.Team.TeamColor.Color
-    end
-    return Color3.new(1, 1, 1)  -- Default to white if no team is assigned
+-- Get the TeamColor of a character (NPC or player)
+local function getCharacterTeamColor(character)
+	local player = Players:GetPlayerFromCharacter(character)
+	if player and player.Team then
+		return player.Team.TeamColor.Color
+	end
+
+	-- For NPCs with StringValue "Team"
+	local teamTag = character:FindFirstChild("Team")
+	if teamTag and typeof(teamTag.Value) == "string" then
+		local teamObj = Teams:FindFirstChild(teamTag.Value)
+		if teamObj then
+			return teamObj.TeamColor.Color
+		end
+	end
+
+	return Color3.fromRGB(200, 200, 200)
 end
 
--- Main loop to create ESP for Players and NPCs
+-- Update loop
 RunService.RenderStepped:Connect(function()
-    -- ESP for players
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local dist = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
-            if dist <= 1000 then
-                createESP(player.Character, getTeamColor(player), player.Name, false)
-            end
-        end
-    end
+	for _, model in Workspace:GetDescendants() do
+		if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
+			local player = Players:GetPlayerFromCharacter(model)
+			local name = model.Name
+			applyESP(model, name)
 
-    -- ESP for NPCs
-    for _, npc in pairs(workspace:GetDescendants()) do
-        if npc:IsA("Model") and not Players:GetPlayerFromCharacter(npc) and npc:FindFirstChild("Humanoid") and npc:FindFirstChild("HumanoidRootPart") then
-            local dist = (LocalPlayer.Character.HumanoidRootPart.Position - npc.HumanoidRootPart.Position).Magnitude
-            if dist <= 1000 then
-                createESP(npc, Color3.new(1, 0.5, 0), npc.Name, true) -- Orange color for NPCs
-            end
-        end
-    end
+			local color = getCharacterTeamColor(model)
+			local highlight = model:FindFirstChild("ESP_Highlight")
+			if highlight then
+				highlight.FillColor = color
+				highlight.OutlineColor = Color3.new(1, 1, 1)
+			end
+		end
+	end
 end)
