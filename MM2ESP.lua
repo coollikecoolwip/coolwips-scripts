@@ -1,19 +1,30 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
 
+local LocalPlayer = Players.LocalPlayer
 local roleColors = {
-    Murderer = Color3.fromRGB(255, 0, 0), -- Red
-    Sheriff = Color3.fromRGB(0, 170, 255), -- Blue
+    Murderer = Color3.fromRGB(255, 0, 0),    -- Red
+    Sheriff = Color3.fromRGB(0, 170, 255),   -- Blue
     Innocent = Color3.fromRGB(120, 120, 120) -- Gray
 }
 
 local roleTracker = {}
 
-function createESP(player, color)
+local function clearESP(player)
     if player.Character then
         for _, part in pairs(player.Character:GetDescendants()) do
-            if part:IsA("BasePart") and not part:FindFirstChild("ESPBox") then
+            if part:IsA("BasePart") then
+                local esp = part:FindFirstChild("ESPBox")
+                if esp then esp:Destroy() end
+            end
+        end
+    end
+end
+
+local function createESP(player, color)
+    if player.Character then
+        for _, part in pairs(player.Character:GetDescendants()) do
+            if part:IsA("BasePart") and not part:FindFirstChild("ESPBox") and not part:IsDescendantOf(player.Character:FindFirstChildOfClass("Tool")) then
                 local box = Instance.new("BoxHandleAdornment")
                 box.Name = "ESPBox"
                 box.Adornee = part
@@ -28,22 +39,48 @@ function createESP(player, color)
     end
 end
 
-function updateESP()
+local function detectRoles()
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local tool = player.Character:FindFirstChildOfClass("Tool")
             if tool then
-                if tool.Name:lower():find("knife") then
+                local name = tool.Name:lower()
+                if name:find("knife") then
                     roleTracker[player] = "Murderer"
-                elseif tool.Name:lower():find("gun") then
+                elseif name:find("gun") then
                     roleTracker[player] = "Sheriff"
                 end
             end
+        end
+    end
+end
 
+local function updateESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
             local role = roleTracker[player] or "Innocent"
             createESP(player, roleColors[role])
         end
     end
 end
 
-RunService.RenderStepped:Connect(updateESP)
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        wait(1)
+        roleTracker[player] = nil
+        clearESP(player)
+    end)
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    player.CharacterAdded:Connect(function()
+        wait(1)
+        roleTracker[player] = nil
+        clearESP(player)
+    end)
+end
+
+RunService.RenderStepped:Connect(function()
+    detectRoles()
+    updateESP()
+end)
