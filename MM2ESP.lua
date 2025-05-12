@@ -2,7 +2,6 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
--- Colors for roles
 local ROLE_COLORS = {
 	Murderer = Color3.fromRGB(255, 0, 0),
 	Sheriff = Color3.fromRGB(0, 170, 255),
@@ -10,7 +9,6 @@ local ROLE_COLORS = {
 	Gun = Color3.fromRGB(0, 255, 0),
 }
 
--- Track ESP objects
 local espObjects = {}
 
 local function getRole(player)
@@ -29,7 +27,6 @@ local function addESP(player)
 
 	local char = player.Character
 
-	-- Highlight
 	local highlight = Instance.new("Highlight")
 	highlight.Name = "MM2ESP"
 	highlight.Adornee = char
@@ -37,10 +34,6 @@ local function addESP(player)
 	highlight.OutlineTransparency = 0
 	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	highlight.Parent = game:GetService("CoreGui")
-	espObjects[player] = highlight
-
-	-- Role label instead of player name
-	local role = getRole(player)
 
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "RoleLabel"
@@ -56,16 +49,20 @@ local function addESP(player)
 	label.TextStrokeTransparency = 0
 	label.TextScaled = true
 	label.Font = Enum.Font.SourceSansBold
-	label.Text = role  -- Show the player's role
+	label.Text = "Innocent"
 	label.Parent = billboard
+
+	espObjects[player] = {
+		Highlight = highlight,
+		Label = label,
+	}
 end
 
 local function removeESP(player)
 	if espObjects[player] then
-		espObjects[player]:Destroy()
+		if espObjects[player].Highlight then espObjects[player].Highlight:Destroy() end
 		espObjects[player] = nil
 	end
-
 	if player.Character and player.Character:FindFirstChild("Head") then
 		local old = player.Character.Head:FindFirstChild("RoleLabel")
 		if old then old:Destroy() end
@@ -77,11 +74,13 @@ local function updateESP()
 		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			addESP(player)
 			local role = getRole(player)
-			local esp = espObjects[player]
-			if esp then
-				esp.Adornee = player.Character
-				esp.FillColor = ROLE_COLORS[role]
-				esp.OutlineColor = ROLE_COLORS[role]
+			local data = espObjects[player]
+			if data then
+				data.Highlight.Adornee = player.Character
+				data.Highlight.FillColor = ROLE_COLORS[role]
+				data.Highlight.OutlineColor = ROLE_COLORS[role]
+				data.Label.Text = role
+				data.Label.TextColor3 = ROLE_COLORS[role]
 			end
 		else
 			removeESP(player)
@@ -94,7 +93,6 @@ local function showDroppedGun()
 		if item:IsA("Tool") and item.Name == "GunDrop" and not item:FindFirstChild("ESP") then
 			local part = item:FindFirstChildWhichIsA("BasePart")
 			if part then
-				-- Outline
 				local hl = Instance.new("Highlight")
 				hl.Name = "ESP"
 				hl.Adornee = part
@@ -104,7 +102,6 @@ local function showDroppedGun()
 				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 				hl.Parent = item
 
-				-- Label
 				local billboard = Instance.new("BillboardGui")
 				billboard.Name = "GunLabel"
 				billboard.Size = UDim2.new(0, 100, 0, 40)
@@ -126,15 +123,13 @@ local function showDroppedGun()
 	end
 end
 
--- Reset ESP when teleporting
 LocalPlayer.CharacterAdded:Connect(function()
-	for player, esp in pairs(espObjects) do
-		if esp then esp:Destroy() end
+	for _, data in pairs(espObjects) do
+		if data.Highlight then data.Highlight:Destroy() end
 	end
 	espObjects = {}
 end)
 
--- Continuous update
 RunService.RenderStepped:Connect(function()
 	updateESP()
 	showDroppedGun()
