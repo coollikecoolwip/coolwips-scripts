@@ -3,16 +3,30 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 local function createNameTag(model, nameText, color)
-	if model:FindFirstChild("ESP_NameTag") then return end
+	if model:FindFirstChild("ESP_NameTagPart") then return end
 
-	local head = model:FindFirstChild("Head")
-	if not head then return end
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	local part = Instance.new("Part")
+	part.Name = "ESP_NameTagPart"
+	part.Size = Vector3.new(1, 1, 1)
+	part.Transparency = 1
+	part.Anchored = false
+	part.CanCollide = false
+	part.CFrame = hrp.CFrame * CFrame.new(0, 3, 0)
+	part.Parent = model
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = part
+	weld.Part1 = hrp
+	weld.Parent = part
 
 	local tag = Instance.new("BillboardGui")
 	tag.Name = "ESP_NameTag"
-	tag.Adornee = head
+	tag.Adornee = part
 	tag.Size = UDim2.new(0, 200, 0, 30)
-	tag.StudsOffset = Vector3.new(0, 2.5, 0)
+	tag.StudsOffset = Vector3.new(0, 0, 0)
 	tag.AlwaysOnTop = true
 
 	local label = Instance.new("TextLabel")
@@ -25,7 +39,7 @@ local function createNameTag(model, nameText, color)
 	label.Font = Enum.Font.SourceSansBold
 	label.Parent = tag
 
-	tag.Parent = model
+	tag.Parent = part
 end
 
 local function applyHighlight(model, color)
@@ -37,7 +51,7 @@ local function applyHighlight(model, color)
 	highlight.OutlineTransparency = 0
 	highlight.OutlineColor = color
 	highlight.Adornee = model
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- Visible through walls
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	highlight.Parent = model
 end
 
@@ -50,7 +64,7 @@ RunService.RenderStepped:Connect(function()
 		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			local dist = (player.Character.HumanoidRootPart.Position - pos).Magnitude
 			if dist < 1500 then
-				applyHighlight(player.Character, Color3.fromRGB(255, 165, 0)) -- Orange
+				applyHighlight(player.Character, Color3.fromRGB(255, 165, 0))
 				createNameTag(player.Character, player.Name, Color3.fromRGB(255, 165, 0))
 			end
 		end
@@ -61,7 +75,7 @@ RunService.RenderStepped:Connect(function()
 			if not Players:GetPlayerFromCharacter(model) then
 				local dist = (model.HumanoidRootPart.Position - pos).Magnitude
 				if dist < 1500 then
-					applyHighlight(model, Color3.fromRGB(255, 0, 0)) -- Red
+					applyHighlight(model, Color3.fromRGB(255, 0, 0))
 					createNameTag(model, model.Name, Color3.fromRGB(255, 0, 0))
 				end
 			end
