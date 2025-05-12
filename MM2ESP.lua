@@ -1,7 +1,8 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
+
 local roleColors = {
     Murderer = Color3.fromRGB(255, 0, 0),    -- Red
     Sheriff = Color3.fromRGB(0, 170, 255),   -- Blue
@@ -21,19 +22,28 @@ local function clearESP(player)
     end
 end
 
+local function resetAll()
+    roleTracker = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        clearESP(p)
+    end
+end
+
 local function createESP(player, color)
     if player.Character then
         for _, part in pairs(player.Character:GetDescendants()) do
-            if part:IsA("BasePart") and not part:FindFirstChild("ESPBox") and not part:IsDescendantOf(player.Character:FindFirstChildOfClass("Tool")) then
-                local box = Instance.new("BoxHandleAdornment")
-                box.Name = "ESPBox"
-                box.Adornee = part
-                box.AlwaysOnTop = true
-                box.ZIndex = 10
-                box.Size = part.Size
-                box.Transparency = 0.7
-                box.Color3 = color
-                box.Parent = part
+            if part:IsA("BasePart") and not part:IsDescendantOf(player.Character:FindFirstChildOfClass("Tool")) then
+                if not part:FindFirstChild("ESPBox") then
+                    local box = Instance.new("BoxHandleAdornment")
+                    box.Name = "ESPBox"
+                    box.Adornee = part
+                    box.AlwaysOnTop = true
+                    box.ZIndex = 10
+                    box.Size = part.Size
+                    box.Transparency = 0.6
+                    box.Color3 = color
+                    box.Parent = part
+                end
             end
         end
     end
@@ -63,6 +73,10 @@ local function updateESP()
         end
     end
 end
+
+Workspace:GetPropertyChangedSignal("DistributedGameTime"):Connect(function()
+    resetAll()
+end)
 
 Players.PlayerAdded:Connect(function(player)
     player.CharacterAdded:Connect(function()
