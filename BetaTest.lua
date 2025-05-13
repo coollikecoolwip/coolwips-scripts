@@ -95,11 +95,8 @@ local function autoShoot()
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			if getRole(player) == "Murderer" then
-				local distance = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
-				if distance < 30 then -- Adjust range as needed
-					Mouse1Click()
-					break
-				end
+				mouse1click() -- Instant shoot with no checks
+				break
 			end
 		end
 	end
