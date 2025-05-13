@@ -1,11 +1,19 @@
-local gun = game.Players.LocalPlayer.Character:FindFirstChild("Gun") or game.Players.LocalPlayer.Backpack:FindFirstChild("Gun")
+local RS = game:GetService("ReplicatedStorage")
+local EventsBefore = {}
 
-if gun then
-	for _, obj in pairs(gun:GetDescendants()) do
-		if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-			print("Found Remote:", obj:GetFullName())
-		end
+for _, v in pairs(RS:GetDescendants()) do
+	if v:IsA("RemoteEvent") then
+		EventsBefore[v] = true
 	end
-else
-	warn("Gun not found!")
+end
+
+print("Now shoot once with your gun.")
+
+-- Wait for user to shoot manually
+task.wait(5)
+
+for _, v in pairs(RS:GetDescendants()) do
+	if v:IsA("RemoteEvent") and not EventsBefore[v] then
+		print("New RemoteEvent Detected:", v:GetFullName())
+	end
 end
