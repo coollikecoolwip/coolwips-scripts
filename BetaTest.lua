@@ -1,8 +1,8 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
 
--- Colors for each role
 local ROLE_COLORS = {
 	Murderer = Color3.fromRGB(255, 0, 0),
 	Sheriff = Color3.fromRGB(0, 170, 255),
@@ -12,7 +12,6 @@ local ROLE_COLORS = {
 
 local espObjects = {}
 
--- Determine a player's role
 local function getRole(player)
 	if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
 		return "Murderer"
@@ -23,10 +22,8 @@ local function getRole(player)
 	end
 end
 
--- Add ESP visuals to a player
 local function addESP(player)
-	if espObjects[player] then return end
-	if not player.Character or not player.Character:FindFirstChild("Head") then return end
+	if espObjects[player] or not player.Character or not player.Character:FindFirstChild("Head") then return end
 
 	local char = player.Character
 
@@ -61,7 +58,6 @@ local function addESP(player)
 	}
 end
 
--- Remove ESP
 local function removeESP(player)
 	if espObjects[player] then
 		if espObjects[player].Highlight then espObjects[player].Highlight:Destroy() end
@@ -73,7 +69,6 @@ local function removeESP(player)
 	end
 end
 
--- Update ESP visuals
 local function updateESP()
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -93,7 +88,23 @@ local function updateESP()
 	end
 end
 
--- Show highlight on dropped gun
+local function autoShoot()
+	local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Gun")
+	if not tool then return end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			if getRole(player) == "Murderer" then
+				local distance = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
+				if distance < 30 then -- Adjust range as needed
+					Mouse1Click()
+					break
+				end
+			end
+		end
+	end
+end
+
 local function showDroppedGun()
 	for _, item in ipairs(workspace:GetDescendants()) do
 		if item:IsA("Tool") and item.Name == "GunDrop" and not item:FindFirstChild("ESP") then
@@ -129,48 +140,6 @@ local function showDroppedGun()
 	end
 end
 
--- Check if murderer has line of sight
-local function hasLineOfSight(targetPart)
-	local cam = workspace.CurrentCamera
-	local origin = cam.CFrame.Position
-	local direction = (targetPart.Position - origin).Unit * 500
-	local rayParams = RaycastParams.new()
-	rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-	rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-
-	local result = workspace:Raycast(origin, direction, rayParams)
-	return result and result.Instance and targetPart:IsDescendantOf(result.Instance.Parent)
-end
-
--- Auto shoot the murderer
-local function shootAt(murderer)
-	local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Gun")
-	if not tool then return end
-
-	local remote = tool:FindFirstChild("Remote")
-	local hrp = murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart")
-	if remote and hrp then
-		remote:FireServer(hrp.Position)
-	end
-end
-
--- Auto-kill logic
-local function autoKillMurderer()
-	local gun = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Gun")
-	if not gun then return end
-
-	for _, player in pairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer and getRole(player) == "Murderer" and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			local hrp = player.Character.HumanoidRootPart
-			local dist = (hrp.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-			if dist <= 30 and hasLineOfSight(hrp) then
-				shootAt(player)
-			end
-		end
-	end
-end
-
--- Clear ESP on teleport
 LocalPlayer.CharacterAdded:Connect(function()
 	for _, data in pairs(espObjects) do
 		if data.Highlight then data.Highlight:Destroy() end
@@ -178,9 +147,8 @@ LocalPlayer.CharacterAdded:Connect(function()
 	espObjects = {}
 end)
 
--- Constant updates
 RunService.RenderStepped:Connect(function()
 	updateESP()
 	showDroppedGun()
-	autoKillMurderer()
+	autoShoot()
 end)
