@@ -1,19 +1,14 @@
-local RS = game:GetService("ReplicatedStorage")
-local EventsBefore = {}
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local gun = player.Character and player.Character:FindFirstChild("Gun") or player.Backpack:FindFirstChild("Gun")
 
-for _, v in pairs(RS:GetDescendants()) do
-	if v:IsA("RemoteEvent") then
-		EventsBefore[v] = true
-	end
-end
-
-print("Now shoot once with your gun.")
-
--- Wait for user to shoot manually
-task.wait(5)
-
-for _, v in pairs(RS:GetDescendants()) do
-	if v:IsA("RemoteEvent") and not EventsBefore[v] then
-		print("New RemoteEvent Detected:", v:GetFullName())
-	end
+if gun then
+    for _, v in pairs(getgc(true)) do
+        if typeof(v) == "function" and islclosure(v) and debug.getinfo(v).name == "fireBullet" then
+            print("Found gun fire function, trying to call it...")
+            pcall(v)
+        end
+    end
+else
+    warn("Gun not found in backpack or character.")
 end
