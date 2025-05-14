@@ -1,14 +1,39 @@
+-- Services
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-local gun = player.Character and player.Character:FindFirstChild("Gun") or player.Backpack:FindFirstChild("Gun")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
 
-if gun then
-    for _, v in pairs(getgc(true)) do
-        if typeof(v) == "function" and islclosure(v) and debug.getinfo(v).name == "fireBullet" then
-            print("Found gun fire function, trying to call it...")
-            pcall(v)
-        end
-    end
-else
-    warn("Gun not found in backpack or character.")
+-- Silent Aim Target
+local targetPlayer = nil
+
+-- Identify Murderer
+local function getMurderer()
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			if player.Character and (player.Backpack:FindFirstChild("Knife") or player.Character:FindFirstChild("Knife")) then
+				return player
+			end
+		end
+	end
+	return nil
 end
+
+-- Hook target position
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+	local args = {...}
+	local method = getnamecallmethod()
+	
+	-- Detect when gun fires
+	if method == "FireServer" and tostring(self):lower():find("shoot") then
+		local murderer = getMurderer()
+		if murderer and murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart") then
+			args[1] = murderer.Character.HumanoidRootPart.Position
+			return oldNamecall(self, unpack(args))
+		end
+	end
+	
+	return oldNamecall(self, ...)
+end)
+
+print("Silent Aim loaded — shoot anywhere and it’ll auto hit the murderer.")
