@@ -4,9 +4,9 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Role-based sizes
 local HITBOX_SIZES = {
-    Murderer = Vector3.new(5, 5, 5),
-    Sheriff = Vector3.new(5, 5, 5),
-    Innocent = Vector3.new(3.5, 3.5, 3.5),
+    Murderer = Vector3.new(9, 9, 9),
+    Sheriff = Vector3.new(9, 9, 9),
+    Innocent = Vector3.new(6, 6, 6),
 }
 
 -- Track applied ESP to avoid duplicates
