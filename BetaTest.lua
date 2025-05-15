@@ -2,12 +2,17 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
-local ROLE_SIZES = {
-    Murderer = Vector3.new(2.5, 2.5, 2.5),
-    Sheriff = Vector3.new(2.5, 2.5, 2.5),
-    Innocent = Vector3.new(1.5, 1.5, 1.5),
+-- Role-based sizes
+local HITBOX_SIZES = {
+    Murderer = Vector3.new(5, 5, 5),
+    Sheriff = Vector3.new(5, 5, 5),
+    Innocent = Vector3.new(3.5, 3.5, 3.5),
 }
 
+-- Track applied ESP to avoid duplicates
+local appliedHitboxes = {}
+
+-- Determine your own role
 local function getMyRole()
     if LocalPlayer.Backpack:FindFirstChild("Knife") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Knife")) then
         return "Murderer"
@@ -18,7 +23,8 @@ local function getMyRole()
     end
 end
 
-local function getTargetRole(player)
+-- Determine a player's role
+local function getPlayerRole(player)
     if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
         return "Murderer"
     elseif player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
@@ -28,55 +34,51 @@ local function getTargetRole(player)
     end
 end
 
-local function expandHitbox(player, size)
-    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
-    local part = player.Character.HumanoidRootPart
+-- Expand the hitbox and apply green highlight
+local function applyHitbox(player, size)
+    local char = player.Character
+    if not char then return end
 
-    part.Size = size
-    part.Transparency = 0.75
-    part.Material = Enum.Material.ForceField
-    part.CanCollide = false
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp or appliedHitboxes[player] then return end
 
-    if not part:FindFirstChild("HitboxESP") then
-        local hl = Instance.new("Highlight")
-        hl.Name = "HitboxESP"
-        hl.Adornee = part
-        hl.FillColor = Color3.fromRGB(0, 255, 0)
-        hl.FillTransparency = 0.5 -- 50% transparent
-        hl.OutlineTransparency = 0
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Parent = part
-    end
+    hrp.Size = size
+    hrp.CanCollide = false
+    hrp.Transparency = 0.75
+    hrp.Material = Enum.Material.ForceField
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "HitboxESP"
+    highlight.Adornee = hrp
+    highlight.FillColor = Color3.fromRGB(0, 255, 0)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = hrp
+
+    appliedHitboxes[player] = true
 end
 
--- Cleanup on round restart
+-- Reset on character spawn
 LocalPlayer.CharacterAdded:Connect(function()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local part = player.Character.HumanoidRootPart
-            part.Size = Vector3.new(2, 2, 1)
-            part.Transparency = 1
-            part.Material = Enum.Material.Plastic
-            local old = part:FindFirstChild("HitboxESP")
-            if old then old:Destroy() end
-        end
-    end
+    appliedHitboxes = {}
 end)
 
--- Role-based hitbox logic
+-- Main loop
 RunService.RenderStepped:Connect(function()
     local myRole = getMyRole()
 
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local role = getTargetRole(player)
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local role = getPlayerRole(player)
 
-            if myRole == "Murderer" and role == "Innocent" then
-                expandHitbox(player, ROLE_SIZES.Innocent)
-            elseif myRole == "Murderer" and role == "Sheriff" then
-                expandHitbox(player, ROLE_SIZES.Sheriff)
+            -- Only expand based on your role
+            if myRole == "Murderer" and role == "Sheriff" then
+                applyHitbox(player, HITBOX_SIZES.Sheriff)
+            elseif myRole == "Murderer" and role == "Innocent" then
+                applyHitbox(player, HITBOX_SIZES.Innocent)
             elseif myRole == "Sheriff" and role == "Murderer" then
-                expandHitbox(player, ROLE_SIZES.Murderer)
+                applyHitbox(player, HITBOX_SIZES.Murderer)
             end
         end
     end
