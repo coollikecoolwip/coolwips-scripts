@@ -3,8 +3,9 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 local ROLE_SIZES = {
-    Murderer = Vector3.new(15, 15, 15),
-    Innocent = Vector3.new(7, 7, 7),
+    Murderer = Vector3.new(2.5, 2.5, 2.5),
+    Sheriff = Vector3.new(2.5, 2.5, 2.5),
+    Innocent = Vector3.new(1.5, 1.5, 1.5),
 }
 
 local function getMyRole()
@@ -41,14 +42,14 @@ local function expandHitbox(player, size)
         hl.Name = "HitboxESP"
         hl.Adornee = part
         hl.FillColor = Color3.fromRGB(0, 255, 0)
-        hl.FillTransparency = 0.25
+        hl.FillTransparency = 0.5 -- 50% transparent
         hl.OutlineTransparency = 0
         hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         hl.Parent = part
     end
 end
 
--- Reset ESP on round restart
+-- Cleanup on round restart
 LocalPlayer.CharacterAdded:Connect(function()
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -62,7 +63,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     end
 end)
 
--- Apply every frame
+-- Role-based hitbox logic
 RunService.RenderStepped:Connect(function()
     local myRole = getMyRole()
 
@@ -70,8 +71,10 @@ RunService.RenderStepped:Connect(function()
         if player ~= LocalPlayer then
             local role = getTargetRole(player)
 
-            if myRole == "Murderer" and role ~= "Murderer" then
-                expandHitbox(player, ROLE_SIZES[role])
+            if myRole == "Murderer" and role == "Innocent" then
+                expandHitbox(player, ROLE_SIZES.Innocent)
+            elseif myRole == "Murderer" and role == "Sheriff" then
+                expandHitbox(player, ROLE_SIZES.Sheriff)
             elseif myRole == "Sheriff" and role == "Murderer" then
                 expandHitbox(player, ROLE_SIZES.Murderer)
             end
