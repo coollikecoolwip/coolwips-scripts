@@ -1,216 +1,150 @@
+-- Advanced Movement Assist Script (Wallhops, Coyote Frames, Jump Prediction, Ledge Rescue, Clip)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
 local LocalPlayer = Players.LocalPlayer
-local CoreGui = game:GetService("CoreGui")
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HRP = Character:WaitForChild("HumanoidRootPart")
 
-local ROLE_COLORS = {
-	Murderer = Color3.fromRGB(255, 0, 0),
-	Sheriff = Color3.fromRGB(0, 170, 255),
-	Innocent = Color3.fromRGB(150, 150, 150),
-	Gun = Color3.fromRGB(0, 255, 0),
-}
+local lastGroundTime = tick()
+local lastJumpAttempt = 0
+local coyoteTime = 0.2
+local grounded = true
+local wallClipCooldown = 0
+local spamJumpData = {}
 
-local HITBOX_SIZES = {
-	Murderer = Vector3.new(15, 15, 15),
-	Sheriff = Vector3.new(15, 15, 15),
-	Innocent = Vector3.new(10, 10, 10),
-}
+local function isGrounded()
+	local ray = RaycastParams.new()
+	ray.FilterType = Enum.RaycastFilterType.Blacklist
+	ray.FilterDescendantsInstances = {Character}
+	local result = workspace:Raycast(HRP.Position, Vector3.new(0, -3, 0), ray)
+	return result and result.Position
+end
 
-local espObjects = {}
-local appliedHitboxes = {}
-local hitboxEnabled = false
+local function simulateJumpVelocity()
+	local gravity = workspace.Gravity
+	local jumpPower = Humanoid.JumpPower
+	local velocityY = jumpPower
+	return Vector3.new(HRP.Velocity.X, velocityY, HRP.Velocity.Z)
+end
 
-local function getRole(player)
-	if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
-		return "Murderer"
-	elseif player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
-		return "Sheriff"
-	else
-		return "Innocent"
+local function predictLanding(velocity)
+	local simPos = HRP.Position
+	local simVel = velocity
+	local dt = 0.05
+	for i = 1, 60 do
+		simVel = simVel + Vector3.new(0, -workspace.Gravity * dt, 0)
+		simPos = simPos + simVel * dt
+		local rayParams = RaycastParams.new()
+		rayParams.FilterDescendantsInstances = {Character}
+		rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+		local result = workspace:Raycast(simPos, Vector3.new(0, -2, 0), rayParams)
+		if result then
+			return result.Position
+		end
 	end
 end
 
-local function getMyRole()
-	if LocalPlayer.Backpack:FindFirstChild("Knife") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Knife")) then
-		return "Murderer"
-	elseif LocalPlayer.Backpack:FindFirstChild("Gun") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Gun")) then
-		return "Sheriff"
-	else
-		return "Innocent"
-	end
+local function placeSafetyPlatform(pos)
+	local platform = Instance.new("Part")
+	platform.Size = Vector3.new(2.5, 0.2, 2.5)
+	platform.Anchored = true
+	platform.CanCollide = true
+	platform.Transparency = 1
+	platform.CFrame = CFrame.new(pos + Vector3.new(0, 0.1, 0))
+	platform.Parent = workspace
+
+	task.delay(1.5, function()
+		platform:Destroy()
+	end)
 end
 
-local function addESP(player)
-	if espObjects[player] or not player.Character or not player.Character:FindFirstChild("Head") then return end
+local function tryPlaceLedgeGrab()
+	local ray = RaycastParams.new()
+	ray.FilterDescendantsInstances = {Character}
+	ray.FilterType = Enum.RaycastFilterType.Blacklist
+	local result = workspace:Raycast(HRP.Position, Vector3.new(0, -5, 0), ray)
+	if result and result.Instance and result.Instance:IsA("TrussPart") then
+		local ghostTruss = result.Instance:Clone()
+		ghostTruss.Transparency = 1
+		ghostTruss.Parent = workspace
+		ghostTruss.CFrame = result.Instance.CFrame
 
-	local char = player.Character
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "MM2ESP"
-	highlight.Adornee = char
-	highlight.FillTransparency = 0.75
-	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = CoreGui
-
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "RoleLabel"
-	billboard.Size = UDim2.new(0, 200, 0, 40)
-	billboard.AlwaysOnTop = true
-	billboard.StudsOffset = Vector3.new(0, 3, 0)
-	billboard.Parent = char.Head
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.TextColor3 = Color3.new(1, 1, 1)
-	label.TextStrokeTransparency = 0
-	label.TextScaled = true
-	label.Font = Enum.Font.SourceSansBold
-	label.Text = "Innocent"
-	label.Parent = billboard
-
-	espObjects[player] = {
-		Highlight = highlight,
-		Label = label,
-	}
-end
-
-local function removeESP(player)
-	if espObjects[player] then
-		if espObjects[player].Highlight then espObjects[player].Highlight:Destroy() end
-		espObjects[player] = nil
-	end
-	if player.Character and player.Character:FindFirstChild("Head") then
-		local old = player.Character.Head:FindFirstChild("RoleLabel")
-		if old then old:Destroy() end
-	end
-end
-
-local function updateESP()
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			addESP(player)
-			local role = getRole(player)
-			local data = espObjects[player]
-			if data then
-				data.Highlight.Adornee = player.Character
-				data.Highlight.FillColor = ROLE_COLORS[role]
-				data.Highlight.OutlineColor = ROLE_COLORS[role]
-				data.Label.Text = role
-				data.Label.TextColor3 = ROLE_COLORS[role]
+		task.spawn(function()
+			for i = 1, 20 do
+				ghostTruss.Size = ghostTruss.Size - Vector3.new(0.1, 0, 0.1)
+				task.wait(0.05)
 			end
+			ghostTruss:Destroy()
+		end)
+	end
+end
+
+local function checkWallClip()
+	if tick() - wallClipCooldown < 2 then return end
+	local recent = spamJumpData
+	if #recent < 15 then return end
+	local movement = (HRP.Position - recent[1]).Magnitude
+	if movement < 3 then
+		local delta = math.abs(HRP.CFrame.LookVector.X) + math.abs(HRP.CFrame.LookVector.Z)
+		if delta > 1.5 then
+			local ray = RaycastParams.new()
+			ray.FilterDescendantsInstances = {Character}
+			ray.FilterType = Enum.RaycastFilterType.Blacklist
+			local result = workspace:Raycast(HRP.Position, HRP.CFrame.LookVector * 2, ray)
+			if result and result.Instance then
+				local offset = HRP.CFrame.LookVector * 1.3
+				HRP.CFrame = HRP.CFrame + offset
+				wallClipCooldown = tick()
+			end
+		end
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.Space then
+		lastJumpAttempt = tick()
+
+		if not grounded and tick() - lastGroundTime < coyoteTime then
+			Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 		else
-			removeESP(player)
+			-- Precise wallhop: instant jump
+			Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 		end
 	end
-end
-
-local function showDroppedGun()
-	for _, item in ipairs(workspace:GetDescendants()) do
-		if item:IsA("Tool") and item.Name == "GunDrop" and not item:FindFirstChild("ESP") then
-			local part = item:FindFirstChildWhichIsA("BasePart")
-			if part then
-				local hl = Instance.new("Highlight")
-				hl.Name = "ESP"
-				hl.Adornee = part
-				hl.FillColor = ROLE_COLORS.Gun
-				hl.FillTransparency = 0.5
-				hl.OutlineTransparency = 0
-				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-				hl.Parent = item
-
-				local billboard = Instance.new("BillboardGui")
-				billboard.Name = "GunLabel"
-				billboard.Size = UDim2.new(0, 100, 0, 40)
-				billboard.StudsOffset = Vector3.new(0, 2, 0)
-				billboard.AlwaysOnTop = true
-				billboard.Parent = part
-
-				local label = Instance.new("TextLabel")
-				label.Size = UDim2.new(1, 0, 1, 0)
-				label.BackgroundTransparency = 1
-				label.TextColor3 = ROLE_COLORS.Gun
-				label.TextStrokeTransparency = 0
-				label.TextScaled = true
-				label.Text = "Gun"
-				label.Font = Enum.Font.SourceSansBold
-				label.Parent = billboard
-			end
-		end
-	end
-end
-
-local function applyHitbox(player, size)
-	local char = player.Character
-	if not char or appliedHitboxes[player] then return end
-
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-
-	hrp.Size = size
-	hrp.CanCollide = false
-	hrp.Transparency = 0.75
-	hrp.Material = Enum.Material.ForceField
-
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "HitboxESP"
-	highlight.Adornee = hrp
-	highlight.FillColor = Color3.fromRGB(0, 255, 0)
-	highlight.FillTransparency = 0.5
-	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = hrp
-
-	appliedHitboxes[player] = true
-end
-
-local function updateHitboxes()
-	if not hitboxEnabled then return end
-	local myRole = getMyRole()
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			local role = getRole(player)
-			if myRole == "Murderer" and (role == "Sheriff" or role == "Innocent") then
-				applyHitbox(player, HITBOX_SIZES[role])
-			elseif myRole == "Sheriff" and role == "Murderer" then
-				applyHitbox(player, HITBOX_SIZES.Murderer)
-			end
-		end
-	end
-end
-
-LocalPlayer.CharacterAdded:Connect(function()
-	for _, data in pairs(espObjects) do
-		if data.Highlight then data.Highlight:Destroy() end
-	end
-	espObjects = {}
-	appliedHitboxes = {}
 end)
 
 RunService.RenderStepped:Connect(function()
-	updateESP()
-	showDroppedGun()
-	updateHitboxes()
-end)
+	if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
 
-local toggleButton = Instance.new("ScreenGui", CoreGui)
-toggleButton.Name = "HitboxToggleUI"
+	-- Record spam jump position
+	table.insert(spamJumpData, HRP.Position)
+	if #spamJumpData > 40 then
+		table.remove(spamJumpData, 1)
+	end
 
-local frame = Instance.new("TextButton")
-frame.Size = UDim2.new(0, 160, 0, 50)
-frame.Position = UDim2.new(0, 10, 0, 10)
-frame.Text = "Hitbox Expander: OFF"
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.TextColor3 = Color3.fromRGB(255, 255, 255)
-frame.BorderSizePixel = 0
-frame.Font = Enum.Font.SourceSansBold
-frame.TextSize = 18
-frame.Draggable = true
-frame.Active = true
-frame.Parent = toggleButton
+	-- Coyote check
+	if isGrounded() then
+		lastGroundTime = tick()
+		grounded = true
+	else
+		grounded = false
+	end
 
-frame.MouseButton1Click:Connect(function()
-	hitboxEnabled = not hitboxEnabled
-	frame.Text = hitboxEnabled and "Hitbox Expander: ON" or "Hitbox Expander: OFF"
+	-- Predict missed jumps
+	local predicted = predictLanding(simulateJumpVelocity())
+	if predicted then
+		local rayParams = RaycastParams.new()
+		rayParams.FilterDescendantsInstances = {Character}
+		rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+		local check = workspace:Raycast(predicted + Vector3.new(0, 2, 0), Vector3.new(0, -4, 0), rayParams)
+		if not check then
+			placeSafetyPlatform(predicted)
+		end
+	end
+
+	tryPlaceLedgeGrab()
+	checkWallClip()
 end)
