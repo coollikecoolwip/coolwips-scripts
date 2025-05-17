@@ -1,143 +1,129 @@
-# This message confirms the user's request and initiates code creation.
-# Let's now generate a new standalone Roblox LocalScript based on the detailed custom jump mechanics request, with no GUI and all functionality enabled by default.
-
-jump_script = """
---// Advanced Jump Mechanics Script (Auto-Enabled)
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
-local HRP = Character:WaitForChild("HumanoidRootPart")
+local Root = Character:WaitForChild("HumanoidRootPart")
 
--- Settings
-local COYOTE_TIME = 0.2
-local WALL_CLIP_CHECK_TIME = 2
-local CLIP_ROTATION_THRESHOLD = 50
-local WALL_CLIP_MAX_THICKNESS = 1.2
+local holdingJump = false
+local wasOnGround = true
+local jumpBufferTime = 0.2
+local jumpTime = 0
 
--- State
-local spaceHeld = false
-local spacePressed = false
-local lastGroundedTime = 0
-local lastJumpTime = 0
-local jumpCount = 0
-local lastPositions = {}
-local spamJumpStart = nil
-local lastRotation = 0
-
--- Helpers
-local function isGrounded()
-	local ray = Ray.new(HRP.Position, Vector3.new(0, -3, 0))
-	local hit = workspace:FindPartOnRay(ray, Character)
-	return hit
+-- Coyote Frames
+local function canCoyoteJump()
+	return tick() - jumpTime <= jumpBufferTime
 end
 
-local function simulateLandingPosition()
-	local velocity = HRP.Velocity
-	local simPos = HRP.Position + velocity * 0.5
-	return simPos
+-- Predict landing point
+local function getLandingPosition()
+	local velocity = Root.Velocity
+	local time = (velocity.Y < 0) and (math.abs(Root.Position.Y) / math.abs(velocity.Y)) or 0.5
+	local projectedPosition = Root.Position + (velocity * time)
+	return projectedPosition
 end
 
-local function getClosestLedge()
-	for _, part in ipairs(workspace:GetDescendants()) do
-		if part:IsA("TrussPart") or (part:IsA("BasePart") and part.CanCollide and not part:IsDescendantOf(Character)) then
-			local dist = (part.Position - HRP.Position).Magnitude
-			if dist < 7 then
-				return part
-			end
+-- Check if underfoot is a ledge and close to landing
+local function ledgeCheck()
+	local ray = RaycastParams.new()
+	ray.FilterType = Enum.RaycastFilterType.Blacklist
+	ray.FilterDescendantsInstances = {Character}
+	local result = workspace:Raycast(Root.Position, Vector3.new(0, -3, 0), ray)
+	return result
+end
+
+-- Check wall proximity
+local function isNearWall()
+	local ray = RaycastParams.new()
+	ray.FilterType = Enum.RaycastFilterType.Blacklist
+	ray.FilterDescendantsInstances = {Character}
+	local forward = Root.CFrame.LookVector * 1.2
+	local result = workspace:Raycast(Root.Position, forward, ray)
+	return result
+end
+
+-- Fake jump by setting velocity
+local function fakeJump()
+	Root.Velocity = Vector3.new(Root.Velocity.X, 50, Root.Velocity.Z)
+end
+
+-- Add invisible landing platform
+local function createGhostPlatform(pos)
+	local part = Instance.new("Part")
+	part.Size = Vector3.new(5, 0.1, 5)
+	part.Anchored = true
+	part.CanCollide = true
+	part.Transparency = 1
+	part.Position = pos + Vector3.new(0, 0.5, 0)
+	part.Name = "GhostPlatform"
+	part.Parent = workspace
+	game.Debris:AddItem(part, 2)
+end
+
+-- Detect spam jumping and clip through wall
+local jumpHistory = {}
+local function detectSpamClip()
+	table.insert(jumpHistory, tick())
+	if #jumpHistory > 10 then table.remove(jumpHistory, 1) end
+
+	local spam = 0
+	for i = 2, #jumpHistory do
+		if jumpHistory[i] - jumpHistory[i - 1] < 0.3 then
+			spam += 1
 		end
+	end
+
+	if spam >= 5 and isNearWall() then
+		print("Wall Clipping Triggered")
+		Root.CFrame = Root.CFrame + Root.CFrame.LookVector * 1.5
 	end
 end
 
--- Coyote Time Jump
+-- Input handler
 UserInputService.InputBegan:Connect(function(input)
 	if input.KeyCode == Enum.KeyCode.Space then
-		spacePressed = true
-		if tick() - lastGroundedTime < COYOTE_TIME then
-			Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-			lastJumpTime = tick()
+		if wasOnGround then
+			jumpTime = tick()
+		else
+			if canCoyoteJump() then
+				print("Coyote jump!")
+				fakeJump()
+			else
+				print("Jump attempted in air.")
+				fakeJump()
+			end
 		end
+		holdingJump = true
+		detectSpamClip()
 	end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
 	if input.KeyCode == Enum.KeyCode.Space then
-		spaceHeld = false
+		holdingJump = false
 	end
 end)
 
 RunService.RenderStepped:Connect(function()
-	Character = LocalPlayer.Character
-	if not Character then return end
-	Humanoid = Character:FindFirstChild("Humanoid")
-	HRP = Character:FindFirstChild("HumanoidRootPart")
-	if not Humanoid or not HRP then return end
-
-	-- Track grounded state
-	if isGrounded() then
-		lastGroundedTime = tick()
-	end
-
-	-- Predict landing & place platform
-	local simPos = simulateLandingPosition()
-	local ray = Ray.new(HRP.Position, (simPos - HRP.Position).Unit * 4)
-	local hit, pos = workspace:FindPartOnRay(ray, Character)
-	if not hit then
-		local platform = Instance.new("Part")
-		platform.Size = Vector3.new(5.5, 0.1, 5.5)
-		platform.Anchored = true
-		platform.CanCollide = true
-		platform.Transparency = 1
-		platform.Position = simPos
-		platform.Parent = workspace
-		game:GetService("Debris"):AddItem(platform, 0.75)
-	end
-
-	-- Truss grab saver
-	local ledge = getClosestLedge()
-	if ledge and HRP.Position.Y < ledge.Position.Y then
-		local ghost = ledge:Clone()
-		ghost.Transparency = 1
-		ghost.Anchored = true
-		ghost.CanCollide = true
-		ghost.Size = ghost.Size + Vector3.new(0.25, 0, 0.25)
-		ghost.CFrame = ledge.CFrame
-		ghost.Parent = workspace
-		game:GetService("Debris"):AddItem(ghost, 1)
-	end
-
-	-- Spam jump clipping
-	table.insert(lastPositions, HRP.Position)
-	if #lastPositions > 120 then table.remove(lastPositions, 1) end
-	local movedDistance = (lastPositions[#1] - HRP.Position).Magnitude
-
-	if spacePressed then
-		jumpCount += 1
+	if Humanoid.FloorMaterial ~= Enum.Material.Air then
+		wasOnGround = true
 	else
-		jumpCount = 0
+		wasOnGround = false
 	end
 
-	if jumpCount > 20 and movedDistance < 3 then
-		local rotationDiff = math.abs(HRP.Orientation.Y - lastRotation)
-		if rotationDiff > CLIP_ROTATION_THRESHOLD then
-			local clipPart = Instance.new("Part")
-			clipPart.Size = Vector3.new(1.2, 3, 1.2)
-			clipPart.Position = HRP.Position + Vector3.new(0, -1, 0)
-			clipPart.Anchored = true
-			clipPart.Transparency = 1
-			clipPart.CanCollide = false
-			clipPart.Parent = workspace
-			HRP.CFrame = HRP.CFrame + Vector3.new(0, 0.5, 0)
-			game:GetService("Debris"):AddItem(clipPart, 0.2)
+	if holdingJump then
+		local result = ledgeCheck()
+		if result and result.Position.Y - Root.Position.Y <= -2.5 then
+			print("Near ledge, faking jump")
+			fakeJump()
+		end
+
+		local projected = getLandingPosition()
+		local result = workspace:Raycast(projected, Vector3.new(0, -3, 0))
+		if not result then
+			print("About to miss ledge, placing ghost platform")
+			createGhostPlatform(projected)
 		end
 	end
-
-	lastRotation = HRP.Orientation.Y
-	spacePressed = false
 end)
-"""
-
-print("Generated jump enhancement script.")
