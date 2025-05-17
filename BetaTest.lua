@@ -1,36 +1,143 @@
---// SERVICES local Players = game:GetService("Players") local RunService = game:GetService("RunService") local UserInputService = game:GetService("UserInputService")
+# This message confirms the user's request and initiates code creation.
+# Let's now generate a new standalone Roblox LocalScript based on the detailed custom jump mechanics request, with no GUI and all functionality enabled by default.
 
---// VARIABLES local LocalPlayer = Players.LocalPlayer local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait() local Humanoid = Character:WaitForChild("Humanoid") local HRP = Character:WaitForChild("HumanoidRootPart")
+jump_script = """
+--// Advanced Jump Mechanics Script (Auto-Enabled)
 
-local lastGroundedTime = tick() local jumpRequestTime = 0 local canCoyoteJump = false local spaceHeld = false local lastPositions = {}
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HRP = Character:WaitForChild("HumanoidRootPart")
 
---// SETTINGS local COYOTE_TIME = 0.2 local WALL_CLIP_SPAM_TIME = 2 local CLIP_DISTANCE = 1.2
+-- Settings
+local COYOTE_TIME = 0.2
+local WALL_CLIP_CHECK_TIME = 2
+local CLIP_ROTATION_THRESHOLD = 50
+local WALL_CLIP_MAX_THICKNESS = 1.2
 
---// FUNCTIONS local function getFootPosition() local rayOrigin = HRP.Position local rayDirection = Vector3.new(0, -3, 0) local raycastParams = RaycastParams.new() raycastParams.FilterDescendantsInstances = {Character} raycastParams.FilterType = Enum.RaycastFilterType.Blacklist local result = workspace:Raycast(rayOrigin, rayDirection, raycastParams) return result and result.Position or nil end
+-- State
+local spaceHeld = false
+local spacePressed = false
+local lastGroundedTime = 0
+local lastJumpTime = 0
+local jumpCount = 0
+local lastPositions = {}
+local spamJumpStart = nil
+local lastRotation = 0
 
-local function simulateJumpLanding() local gravity = workspace.Gravity local velocity = HRP.Velocity local position = HRP.Position for i = 1, 100 do velocity = velocity + Vector3.new(0, -gravity * 0.016, 0) position = position + velocity * 0.016 local ray = RaycastParams.new() ray.FilterDescendantsInstances = {Character} ray.FilterType = Enum.RaycastFilterType.Blacklist local hit = workspace:Raycast(position, Vector3.new(0, -2, 0), ray) if hit then return position end end return nil end
+-- Helpers
+local function isGrounded()
+	local ray = Ray.new(HRP.Position, Vector3.new(0, -3, 0))
+	local hit = workspace:FindPartOnRay(ray, Character)
+	return hit
+end
 
-local function createInvisiblePlatform(pos) local part = Instance.new("Part") part.Anchored = true part.CanCollide = true part.Transparency = 1 part.Size = Vector3.new(1.5, 0.2, 1.5) part.Position = pos + Vector3.new(0, 0.5, 0) part.Parent = workspace game.Debris:AddItem(part, 0.75) end
+local function simulateLandingPosition()
+	local velocity = HRP.Velocity
+	local simPos = HRP.Position + velocity * 0.5
+	return simPos
+end
 
-local function createTrussClone(original) local truss = Instance.new("TrussPart") truss.Anchored = true truss.CanCollide = true truss.Transparency = 1 truss.Size = original.Size + Vector3.new(0.5, 0.5, 0.5) truss.Position = original.Position truss.Parent = workspace game.Debris:AddItem(truss, 1) end
+local function getClosestLedge()
+	for _, part in ipairs(workspace:GetDescendants()) do
+		if part:IsA("TrussPart") or (part:IsA("BasePart") and part.CanCollide and not part:IsDescendantOf(Character)) then
+			local dist = (part.Position - HRP.Position).Magnitude
+			if dist < 7 then
+				return part
+			end
+		end
+	end
+end
 
-local function checkWallhop() local footPos = getFootPosition() if not footPos then return end local verticalVel = HRP.Velocity.Y if verticalVel < 0 then local deltaRot = math.abs(HRP.Orientation.Y - Character.PrimaryPart.Orientation.Y) if deltaRot > 15 then if spaceHeld then wait(0.05) Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) elseif tick() - jumpRequestTime < 0.1 then Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end end end
+-- Coyote Time Jump
+UserInputService.InputBegan:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.Space then
+		spacePressed = true
+		if tick() - lastGroundedTime < COYOTE_TIME then
+			Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+			lastJumpTime = tick()
+		end
+	end
+end)
 
-local function checkCoyoteJump() if tick() - lastGroundedTime < COYOTE_TIME and tick() - jumpRequestTime < 0.1 then Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end end
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.Space then
+		spaceHeld = false
+	end
+end)
 
-local function checkMissedLanding() local predicted = simulateJumpLanding() if predicted then local ray = RaycastParams.new() ray.FilterDescendantsInstances = {Character} ray.FilterType = Enum.RaycastFilterType.Blacklist local hit = workspace:Raycast(predicted, Vector3.new(0, -2, 0), ray) if not hit then createInvisiblePlatform(predicted) end end end
+RunService.RenderStepped:Connect(function()
+	Character = LocalPlayer.Character
+	if not Character then return end
+	Humanoid = Character:FindFirstChild("Humanoid")
+	HRP = Character:FindFirstChild("HumanoidRootPart")
+	if not Humanoid or not HRP then return end
 
-local function checkTrussSave() for _, v in pairs(workspace:GetDescendants()) do if v:IsA("TrussPart") and (v.Position - HRP.Position).Magnitude < 5 then if HRP.Position.Y > v.Position.Y + v.Size.Y / 2 then createTrussClone(v) end end end end
+	-- Track grounded state
+	if isGrounded() then
+		lastGroundedTime = tick()
+	end
 
-local function checkSpamClip() table.insert(lastPositions, HRP.Position) if #lastPositions > 60 then table.remove(lastPositions, 1) end local moved = false for i = 2, #lastPositions do if (lastPositions[i] - lastPositions[i - 1]).Magnitude > 0.25 then moved = true break end end if not moved and spaceHeld then local deltaRot = math.abs(HRP.Orientation.Y - Character.PrimaryPart.Orientation.Y) if deltaRot > 25 then local rayParams = RaycastParams.new() rayParams.FilterDescendantsInstances = {Character} rayParams.FilterType = Enum.RaycastFilterType.Blacklist local ray = workspace:Raycast(HRP.Position, HRP.CFrame.LookVector * CLIP_DISTANCE, rayParams) if ray then HRP.CFrame = HRP.CFrame + HRP.CFrame.LookVector * (CLIP_DISTANCE + 0.1) end end end end
+	-- Predict landing & place platform
+	local simPos = simulateLandingPosition()
+	local ray = Ray.new(HRP.Position, (simPos - HRP.Position).Unit * 4)
+	local hit, pos = workspace:FindPartOnRay(ray, Character)
+	if not hit then
+		local platform = Instance.new("Part")
+		platform.Size = Vector3.new(5.5, 0.1, 5.5)
+		platform.Anchored = true
+		platform.CanCollide = true
+		platform.Transparency = 1
+		platform.Position = simPos
+		platform.Parent = workspace
+		game:GetService("Debris"):AddItem(platform, 0.75)
+	end
 
---// INPUT HANDLERS UserInputService.InputBegan:Connect(function(input, processed) if processed then return end if input.KeyCode == Enum.KeyCode.Space then spaceHeld = true jumpRequestTime = tick() end end)
+	-- Truss grab saver
+	local ledge = getClosestLedge()
+	if ledge and HRP.Position.Y < ledge.Position.Y then
+		local ghost = ledge:Clone()
+		ghost.Transparency = 1
+		ghost.Anchored = true
+		ghost.CanCollide = true
+		ghost.Size = ghost.Size + Vector3.new(0.25, 0, 0.25)
+		ghost.CFrame = ledge.CFrame
+		ghost.Parent = workspace
+		game:GetService("Debris"):AddItem(ghost, 1)
+	end
 
-UserInputService.InputEnded:Connect(function(input) if input.KeyCode == Enum.KeyCode.Space then spaceHeld = false end end)
+	-- Spam jump clipping
+	table.insert(lastPositions, HRP.Position)
+	if #lastPositions > 120 then table.remove(lastPositions, 1) end
+	local movedDistance = (lastPositions[#1] - HRP.Position).Magnitude
 
---// MAIN LOOP RunService.RenderStepped:Connect(function() if Humanoid.FloorMaterial ~= Enum.Material.Air then lastGroundedTime = tick() end checkCoyoteJump() checkWallhop() checkMissedLanding() checkTrussSave() checkSpamClip() end)
+	if spacePressed then
+		jumpCount += 1
+	else
+		jumpCount = 0
+	end
 
-Character:WaitForChild("Humanoid").StateChanged:Connect(function(old, new) if new == Enum.HumanoidStateType.Jumping then jumpRequestTime = 0 end end)
+	if jumpCount > 20 and movedDistance < 3 then
+		local rotationDiff = math.abs(HRP.Orientation.Y - lastRotation)
+		if rotationDiff > CLIP_ROTATION_THRESHOLD then
+			local clipPart = Instance.new("Part")
+			clipPart.Size = Vector3.new(1.2, 3, 1.2)
+			clipPart.Position = HRP.Position + Vector3.new(0, -1, 0)
+			clipPart.Anchored = true
+			clipPart.Transparency = 1
+			clipPart.CanCollide = false
+			clipPart.Parent = workspace
+			HRP.CFrame = HRP.CFrame + Vector3.new(0, 0.5, 0)
+			game:GetService("Debris"):AddItem(clipPart, 0.2)
+		end
+	end
 
-LocalPlayer.CharacterAdded:Connect(function(char) Character = char Humanoid = char:WaitForChild("Humanoid") HRP = char:WaitForChild("HumanoidRootPart") end)
+	lastRotation = HRP.Orientation.Y
+	spacePressed = false
+end)
+"""
 
+print("Generated jump enhancement script.")
