@@ -4,7 +4,7 @@ local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = workspace.CurrentCamera
-local Mouse = LocalPlayer:GetMouse()
+local Mouse = LocalPlayer and LocalPlayer:GetMouse()
 
 local aimbotFOV = 300
 local firstPersonAimbotEnabled = false
@@ -13,9 +13,11 @@ local thirdPersonAimbotEnabled = false
 local blacklisted = {}
 local lastVisibleTargets = {}
 
--- GUI Setup
-local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+-- GUI Setup (make persistent across respawns)
+local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "UniversalAimbotGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game.CoreGui -- keeping your original parent
 
 -- Main Frame
 local frame = Instance.new("Frame", ScreenGui)
@@ -54,9 +56,20 @@ local function createToggle(text, yOffset, getState, callback)
 end
 
 -- Create toggles
-local firstPersonToggle, update1P = createToggle("1P Aimbot (Hard Lock)", 10, function() return firstPersonAimbotEnabled end, function(v) firstPersonAimbotEnabled = v end)
-local triggerbotToggle, updateTrig = createToggle("Triggerbot (Hotkey Y)", 50, function() return triggerbotEnabled end, function(v) triggerbotEnabled = v end)
-local thirdPersonToggle, update3P = createToggle("3P Aimbot (Free Cam)", 90, function() return thirdPersonAimbotEnabled end, function(v) thirdPersonAimbotEnabled = v end)
+local firstPersonToggle, update1P = createToggle("1P Aimbot (Hard Lock)", 10,
+	function() return firstPersonAimbotEnabled end,
+	function(v) firstPersonAimbotEnabled = v end
+)
+
+local triggerbotToggle, updateTrig = createToggle("Triggerbot (Hotkey Y)", 50,
+	function() return triggerbotEnabled end,
+	function(v) triggerbotEnabled = v end
+)
+
+local thirdPersonToggle, update3P = createToggle("3P Aimbot (Free Cam)", 90,
+	function() return thirdPersonAimbotEnabled end,
+	function(v) thirdPersonAimbotEnabled = v end
+)
 
 -- Blacklist GUI (draggable)
 local bb = Instance.new("Frame", ScreenGui)
@@ -86,12 +99,14 @@ UIList.Padding = UDim.new(0, 4)
 UIList.SortOrder = Enum.SortOrder.LayoutOrder
 
 local function refreshBlacklistUI()
+    -- remove previous buttons (keep UIList)
     for _, child in ipairs(listFrame:GetChildren()) do
         if not child:IsA("UIListLayout") then
             child:Destroy()
         end
     end
 
+    -- re-add players
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= LocalPlayer then
             local btn = Instance.new("TextButton", listFrame)
@@ -110,7 +125,7 @@ local function refreshBlacklistUI()
     end
 end
 
-
+-- initial UI
 Players.PlayerAdded:Connect(refreshBlacklistUI)
 Players.PlayerRemoving:Connect(refreshBlacklistUI)
 refreshBlacklistUI()
@@ -130,34 +145,62 @@ UserInputService.InputBegan:Connect(function(input, gp)
 	end
 end)
 
--- Visibility Caching Loop
+-- Helper: safe raycast wrapper
+local function safeRaycast(origin, direction, params)
+	-- pcall to avoid runtime errors stopping the loop
+	local ok, result = pcall(function()
+		return workspace:Raycast(origin, direction, params)
+	end)
+	if ok then
+		return result
+	end
+	return nil
+end
+
+-- Visibility Caching Loop (throttled)
 task.spawn(function()
+	-- Pre-allocate a RaycastParams object to reuse
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+	rayParams.IgnoreWater = true
+
 	while true do
 		lastVisibleTargets = {}
-		local origin = Camera.CFrame.Position
-		for _, pl in ipairs(Players:GetPlayers()) do
-			if pl ~= LocalPlayer and not blacklisted[pl.Name] and pl.Character then
-				local bestPart, bestDist
-				for _, partName in ipairs({"Head", "HumanoidRootPart", "UpperTorso"}) do
-					local part = pl.Character:FindFirstChild(partName)
-					if part then
-						local rayParams = RaycastParams.new()
-						rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-						rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-						local result = workspace:Raycast(origin, (part.Position - origin).Unit * 500, rayParams)
-						if result and result.Instance and result.Instance:IsDescendantOf(pl.Character) then
-							local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-							if onScreen then
-								local dist = (Vector2.new(screenPos.X, screenPos.Y) - UserInputService:GetMouseLocation()).Magnitude
-								if dist < aimbotFOV and (not bestDist or dist < bestDist) then
-									bestPart, bestDist = part, dist
+		-- ensure Camera and LocalPlayer.Character exist
+		Camera = workspace.CurrentCamera or Camera
+		local localChar = LocalPlayer and LocalPlayer.Character
+		local origin = (Camera and Camera.CFrame) and Camera.CFrame.Position or nil
+		if origin and localChar then
+			-- set blacklist filter to current character reference
+			rayParams.FilterDescendantsInstances = {localChar}
+
+			for _, pl in ipairs(Players:GetPlayers()) do
+				-- basic guards
+				if pl ~= LocalPlayer and not blacklisted[pl.Name] and pl.Character then
+					local bestPart, bestDist
+					-- check common target parts
+					for _, partName in ipairs({"Head", "HumanoidRootPart", "UpperTorso"}) do
+						local part = pl.Character:FindFirstChild(partName)
+						if part and part:IsA("BasePart") then
+							local direction = (part.Position - origin)
+							-- do a safe raycast
+							local result = safeRaycast(origin, direction.Unit * 500, rayParams)
+							if result and result.Instance and result.Instance:IsDescendantOf(pl.Character) then
+								local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+								if onScreen then
+									-- use UserInputService mouse location (more consistent)
+									local mousePos = UserInputService:GetMouseLocation()
+									local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+									if dist < aimbotFOV and (not bestDist or dist < bestDist) then
+										bestPart, bestDist = part, dist
+									end
 								end
 							end
 						end
 					end
-				end
-				if bestPart then
-					lastVisibleTargets[pl] = {part = bestPart, dist = bestDist}
+					if bestPart then
+						lastVisibleTargets[pl] = { part = bestPart, dist = bestDist }
+					end
 				end
 			end
 		end
@@ -169,8 +212,11 @@ end)
 local function getClosestTarget()
 	local closest, part, dist = nil, nil, math.huge
 	for pl, data in pairs(lastVisibleTargets) do
-		if data.dist < dist and not blacklisted[pl.Name] then
-			closest, part, dist = pl, data.part, data.dist
+		-- guard in case player left or changed name
+		if pl and data and data.dist and not blacklisted[pl.Name] then
+			if data.dist < dist then
+				closest, part, dist = pl, data.part, data.dist
+			end
 		end
 	end
 	return closest, part
@@ -180,35 +226,52 @@ end
 local function firstPersonAimbot()
 	if not firstPersonAimbotEnabled then return end
 	local t, pt = getClosestTarget()
-	if t and pt then
-		Camera.CFrame = CFrame.new(Camera.CFrame.Position, pt.Position)
+	if t and pt and Camera then
+		-- ensure target part still exists
+		if pt.Parent then
+			Camera.CFrame = CFrame.new(Camera.CFrame.Position, pt.Position)
+		end
 	end
 end
 
 local function thirdPersonAimbot()
 	if not thirdPersonAimbotEnabled then return end
 	local t, pt = getClosestTarget()
-	if t and pt then
-		local screenPos = Camera:WorldToViewportPoint(pt.Position)
-		local moveVec = Vector2.new(screenPos.X, screenPos.Y) - UserInputService:GetMouseLocation()
-		mousemoverel(moveVec.X, moveVec.Y)
+	if t and pt and Camera then
+		if pt.Parent then
+			local screenPos = Camera:WorldToViewportPoint(pt.Position)
+			local moveVec = Vector2.new(screenPos.X, screenPos.Y) - UserInputService:GetMouseLocation()
+			-- only move if significant to avoid micro jitter
+			if moveVec.Magnitude > 1 then
+				mousemoverel(moveVec.X, moveVec.Y)
+			end
+		end
 	end
 end
 
 local function isAimingAtEnemy()
-	local ray = Camera:ScreenPointToRay(Mouse.X, Mouse.Y)
+	-- ensure LocalPlayer.Character exists
+	local lpChar = LocalPlayer and LocalPlayer.Character
+	if not lpChar then return false end
+
+	local ray = Camera:ScreenPointToRay(Mouse and Mouse.X or 0, Mouse and Mouse.Y or 0)
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-	rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-	local result = workspace:Raycast(ray.Origin, ray.Direction * 9999, rayParams)
+	rayParams.FilterDescendantsInstances = {lpChar}
+	rayParams.IgnoreWater = true
 
-	if result and result.Instance then
-		local model = result.Instance:FindFirstAncestorOfClass("Model")
-		if model and model:FindFirstChild("Humanoid") then
-			local pl = Players:GetPlayerFromCharacter(model)
-			if not pl or (pl ~= LocalPlayer and not blacklisted[pl.Name]) then
-				return true
-			end
+	local ok, result = pcall(function()
+		return workspace:Raycast(ray.Origin, ray.Direction * 9999, rayParams)
+	end)
+	if not ok or not result or not result.Instance then
+		return false
+	end
+
+	local model = result.Instance:FindFirstAncestorOfClass("Model")
+	if model and model:FindFirstChild("Humanoid") then
+		local pl = Players:GetPlayerFromCharacter(model)
+		if not pl or (pl ~= LocalPlayer and not blacklisted[pl.Name]) then
+			return true
 		end
 	end
 	return false
@@ -219,6 +282,7 @@ RunService.RenderStepped:Connect(function()
 	firstPersonAimbot()
 	thirdPersonAimbot()
 	if triggerbotEnabled and isAimingAtEnemy() then
-		mouse1click()
+		-- safe pcall to avoid errors if mouse1click isn't available
+		pcall(function() mouse1click() end)
 	end
 end)
