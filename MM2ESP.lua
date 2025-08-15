@@ -1,216 +1,324 @@
+-- Lightweight MM2 ESP (event-driven, pooled, max FPS)
+-- ONLY for private/testing use. Does NOT change hitboxes.
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 local LocalPlayer = Players.LocalPlayer
 local CoreGui = game:GetService("CoreGui")
+local Workspace = workspace
 
+-- Config (tweak)
 local ROLE_COLORS = {
 	Murderer = Color3.fromRGB(255, 0, 0),
-	Sheriff = Color3.fromRGB(0, 170, 255),
+	Sheriff  = Color3.fromRGB(0, 170, 255),
 	Innocent = Color3.fromRGB(150, 150, 150),
-	Gun = Color3.fromRGB(0, 255, 0),
+	Gun      = Color3.fromRGB(0, 255, 0),
 }
+local LABEL_SIZE = UDim2.new(0, 140, 0, 26)
+local BILLBOARD_OFFSET = Vector3.new(0, 2.5, 0)
 
-local HITBOX_SIZES = {
-	Murderer = Vector3.new(15, 15, 15),
-	Sheriff = Vector3.new(15, 15, 15),
-	Innocent = Vector3.new(10, 10, 10),
-}
+-- Internal tables
+local playerESP = {}   -- player -> { highlight, billboard, label, conns = { ... } }
+local gunESP = {}      -- toolInstance -> { highlight, billboard, label }
 
-local espObjects = {}
-local appliedHitboxes = {}
-local hitboxEnabled = false
+-- Helpers
+local function safeDestroy(obj)
+	if obj and obj.Parent then
+		pcall(function() obj:Destroy() end)
+	end
+end
+
+local function findAdornmentPart(model)
+	if not model then return nil end
+	local head = model:FindFirstChild("Head")
+	if head and head:IsA("BasePart") then return head end
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then return hrp end
+	-- fallback: any first BasePart
+	for _, v in ipairs(model:GetChildren()) do
+		if v:IsA("BasePart") then return v end
+	end
+	return nil
+end
 
 local function getRole(player)
-	if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
-		return "Murderer"
-	elseif player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
-		return "Sheriff"
-	else
-		return "Innocent"
-	end
-end
-
-local function getMyRole()
-	if LocalPlayer.Backpack:FindFirstChild("Knife") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Knife")) then
-		return "Murderer"
-	elseif LocalPlayer.Backpack:FindFirstChild("Gun") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Gun")) then
-		return "Sheriff"
-	else
-		return "Innocent"
-	end
-end
-
-local function addESP(player)
-	if espObjects[player] or not player.Character or not player.Character:FindFirstChild("Head") then return end
-
-	local char = player.Character
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "MM2ESP"
-	highlight.Adornee = char
-	highlight.FillTransparency = 0.75
-	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = CoreGui
-
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "RoleLabel"
-	billboard.Size = UDim2.new(0, 200, 0, 40)
-	billboard.AlwaysOnTop = true
-	billboard.StudsOffset = Vector3.new(0, 3, 0)
-	billboard.Parent = char.Head
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.TextColor3 = Color3.new(1, 1, 1)
-	label.TextStrokeTransparency = 0
-	label.TextScaled = true
-	label.Font = Enum.Font.SourceSansBold
-	label.Text = "Innocent"
-	label.Parent = billboard
-
-	espObjects[player] = {
-		Highlight = highlight,
-		Label = label,
-	}
-end
-
-local function removeESP(player)
-	if espObjects[player] then
-		if espObjects[player].Highlight then espObjects[player].Highlight:Destroy() end
-		espObjects[player] = nil
-	end
-	if player.Character and player.Character:FindFirstChild("Head") then
-		local old = player.Character.Head:FindFirstChild("RoleLabel")
-		if old then old:Destroy() end
-	end
-end
-
-local function updateESP()
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			addESP(player)
-			local role = getRole(player)
-			local data = espObjects[player]
-			if data then
-				data.Highlight.Adornee = player.Character
-				data.Highlight.FillColor = ROLE_COLORS[role]
-				data.Highlight.OutlineColor = ROLE_COLORS[role]
-				data.Label.Text = role
-				data.Label.TextColor3 = ROLE_COLORS[role]
-			end
+	-- Lightweight: check Backpack and Character for Knife/Gun
+	-- pcall wrap to be safe if Backpack/Character nil
+	local ok, res = pcall(function()
+		if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
+			return "Murderer"
+		elseif player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
+			return "Sheriff"
 		else
-			removeESP(player)
+			return "Innocent"
 		end
-	end
+	end)
+	if ok then return res end
+	return "Innocent"
 end
 
-local function showDroppedGun()
-	for _, item in ipairs(workspace:GetDescendants()) do
-		if item:IsA("Tool") and item.Name == "GunDrop" and not item:FindFirstChild("ESP") then
-			local part = item:FindFirstChildWhichIsA("BasePart")
-			if part then
-				local hl = Instance.new("Highlight")
-				hl.Name = "ESP"
-				hl.Adornee = part
-				hl.FillColor = ROLE_COLORS.Gun
-				hl.FillTransparency = 0.5
-				hl.OutlineTransparency = 0
-				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-				hl.Parent = item
-
-				local billboard = Instance.new("BillboardGui")
-				billboard.Name = "GunLabel"
-				billboard.Size = UDim2.new(0, 100, 0, 40)
-				billboard.StudsOffset = Vector3.new(0, 2, 0)
-				billboard.AlwaysOnTop = true
-				billboard.Parent = part
-
-				local label = Instance.new("TextLabel")
-				label.Size = UDim2.new(1, 0, 1, 0)
-				label.BackgroundTransparency = 1
-				label.TextColor3 = ROLE_COLORS.Gun
-				label.TextStrokeTransparency = 0
-				label.TextScaled = true
-				label.Text = "Gun"
-				label.Font = Enum.Font.SourceSansBold
-				label.Parent = billboard
-			end
-		end
-	end
-end
-
-local function applyHitbox(player, size)
+-- Create and attach ESP for a player character (only once)
+local function createPlayerESP(player)
+	if playerESP[player] then return end
+	-- wait for character & head
 	local char = player.Character
-	if not char or appliedHitboxes[player] then return end
+	if not (char and char.Parent) then
+		-- will be handled by CharacterAdded handler
+		return
+	end
+	local part = findAdornmentPart(char)
+	if not part then return end
 
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+	-- Highlight: parent to CoreGui for local-only overlay
+	local hl = Instance.new("Highlight")
+	hl.Name = "MM2_Highlight"
+	hl.Adornee = char
+	hl.FillTransparency = 0.6
+	hl.OutlineTransparency = 0
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = CoreGui
 
-	hrp.Size = size
-	hrp.CanCollide = false
-	hrp.Transparency = 0.75
-	hrp.Material = Enum.Material.ForceField
+	-- Billboard label parented to a part (Head preferred)
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "MM2_Label"
+	bb.Size = LABEL_SIZE
+	bb.StudsOffset = BILLBOARD_OFFSET
+	bb.AlwaysOnTop = true
+	-- parent to the adornment part so it follows automatically
+	bb.Parent = part
 
-	local highlight = Instance.new("Highlight")
-	highlight.Name = "HitboxESP"
-	highlight.Adornee = hrp
-	highlight.FillColor = Color3.fromRGB(0, 255, 0)
-	highlight.FillTransparency = 0.5
-	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = hrp
+	local txt = Instance.new("TextLabel", bb)
+	txt.BackgroundTransparency = 1
+	txt.Size = UDim2.new(1,0,1,0)
+	txt.Font = Enum.Font.SourceSansBold
+	txt.TextScaled = true
+	txt.Text = ""
+	txt.TextColor3 = Color3.new(1,1,1)
 
-	appliedHitboxes[player] = true
+	playerESP[player] = {
+		highlight = hl,
+		billboard = bb,
+		label = txt,
+		conns = {}
+	}
+
+	-- initial role update
+	local role = getRole(player)
+	local color = ROLE_COLORS[role] or ROLE_COLORS.Innocent
+	hl.FillColor = color
+	hl.OutlineColor = color
+	txt.Text = role
+	txt.TextColor3 = color
 end
 
-local function updateHitboxes()
-	if not hitboxEnabled then return end
-	local myRole = getMyRole()
+local function removePlayerESP(player)
+	local data = playerESP[player]
+	if not data then return end
+	safeDestroy(data.highlight)
+	safeDestroy(data.billboard)
+	for _, c in ipairs(data.conns) do
+		pcall(function() c:Disconnect() end)
+	end
+	playerESP[player] = nil
+end
 
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			local role = getRole(player)
-			if myRole == "Murderer" and (role == "Sheriff" or role == "Innocent") then
-				applyHitbox(player, HITBOX_SIZES[role])
-			elseif myRole == "Sheriff" and role == "Murderer" then
-				applyHitbox(player, HITBOX_SIZES.Murderer)
+-- Update role colors/text for a single player (called when tools/backpack/character changes)
+local function updatePlayerRole(player)
+	local data = playerESP[player]
+	if not data then
+		-- create if not present
+		createPlayerESP(player)
+		data = playerESP[player]
+		if not data then return end
+	end
+	local role = getRole(player)
+	local color = ROLE_COLORS[role] or ROLE_COLORS.Innocent
+	-- apply colors/text
+	pcall(function()
+		data.highlight.FillColor = color
+		data.highlight.OutlineColor = color
+		data.label.Text = role
+		data.label.TextColor3 = color
+	end)
+end
+
+-- Wire up per-player listeners (Backpack & Character changes)
+local function setupPlayerListeners(player)
+	-- avoid double-wiring
+	if playerESP[player] and next(playerESP[player].conns) then return end
+
+	local function onCharAdded(char)
+		-- small delay to let parts spawn
+		task.spawn(function()
+			task.wait(0.05)
+			createPlayerESP(player)
+			updatePlayerRole(player)
+		end)
+	end
+
+	local function onBackpackChanged()
+		updatePlayerRole(player)
+	end
+
+	-- connect
+	local charConn = nil
+	if player.Character then
+		onCharAdded(player.Character)
+	end
+	charConn = player.CharacterAdded:Connect(onCharAdded)
+	local bp = player:FindFirstChild("Backpack")
+	local backpackConn
+	if bp then
+		backpackConn = bp.ChildAdded:Connect(onBackpackChanged)
+		-- also removals
+		backpackConn = bp.ChildAdded:Connect(function() updatePlayerRole(player) end)
+	end
+
+	-- watch character child added/removed for Knife/Gun
+	local charChildConn
+	charChildConn = player.CharacterAdded:Connect(function(char)
+		-- child added/removed handlers
+		local addedConn = char.ChildAdded:Connect(function(child)
+			if child.Name == "Knife" or child.Name == "Gun" then
+				updatePlayerRole(player)
 			end
+		end)
+		local removedConn = char.ChildRemoved:Connect(function(child)
+			if child.Name == "Knife" or child.Name == "Gun" then
+				updatePlayerRole(player)
+			end
+		end)
+		-- store and cleanup when character removed
+		table.insert(playerESP[player].conns, addedConn)
+		table.insert(playerESP[player].conns, removedConn)
+	end)
+
+	-- store connections so they can be disconnected later
+	playerESP[player] = playerESP[player] or {}
+	playerESP[player].conns = playerESP[player].conns or {}
+	table.insert(playerESP[player].conns, charConn)
+	if backpackConn then table.insert(playerESP[player].conns, backpackConn) end
+	table.insert(playerESP[player].conns, charChildConn)
+end
+
+-- Player handlers
+Players.PlayerAdded:Connect(function(pl)
+	-- create ESP and listeners when character spawns
+	pl.CharacterAdded:Connect(function()
+		createPlayerESP(pl)
+		updatePlayerRole(pl)
+		setupPlayerListeners(pl)
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(pl)
+	removePlayerESP(pl)
+end)
+
+-- Initialize existing players
+for _, pl in ipairs(Players:GetPlayers()) do
+	if pl ~= LocalPlayer then
+		if pl.Character then
+			createPlayerESP(pl)
+			updatePlayerRole(pl)
+		end
+		setupPlayerListeners(pl)
+	end
+end
+
+-- ---- Dropped gun handling (event-driven) ----
+local function createGunESP(tool)
+	if gunESP[tool] then return end
+	local part = tool:FindFirstChildWhichIsA("BasePart", true) -- search descendants
+	if not part then return end
+
+	local hl = Instance.new("Highlight")
+	hl.Name = "MM2_Gun_HL"
+	hl.Adornee = part
+	hl.FillColor = ROLE_COLORS.Gun
+	hl.FillTransparency = 0.5
+	hl.OutlineTransparency = 0
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = CoreGui
+
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "MM2_Gun_Label"
+	bb.Size = UDim2.new(0, 100, 0, 30)
+	bb.StudsOffset = Vector3.new(0, 1.8, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = part
+
+	local lbl = Instance.new("TextLabel", bb)
+	lbl.Size = UDim2.new(1,0,1,0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.SourceSansBold
+	lbl.TextScaled = true
+	lbl.Text = "Gun"
+	lbl.TextColor3 = ROLE_COLORS.Gun
+
+	gunESP[tool] = { highlight = hl, billboard = bb }
+
+	-- cleanup when tool removed/parented elsewhere
+	local function cleanup()
+		local g = gunESP[tool]
+		if g then
+			safeDestroy(g.highlight)
+			safeDestroy(g.billboard)
+			gunESP[tool] = nil
 		end
 	end
+
+	tool.AncestryChanged:Connect(function(_, parent)
+		if not tool.Parent then
+			cleanup()
+		end
+	end)
+	tool.Destroying:Connect(cleanup)
 end
 
-LocalPlayer.CharacterAdded:Connect(function()
-	for _, data in pairs(espObjects) do
-		if data.Highlight then data.Highlight:Destroy() end
+-- initial scan for existing dropped guns (one-time)
+for _, inst in ipairs(Workspace:GetDescendants()) do
+	if inst:IsA("Tool") and inst.Name == "GunDrop" then
+		createGunESP(inst)
 	end
-	espObjects = {}
-	appliedHitboxes = {}
+end
+
+-- listen to future tools appearing
+Workspace.DescendantAdded:Connect(function(inst)
+	if inst:IsA("Tool") and inst.Name == "GunDrop" then
+		-- slight delay to allow parts to exist
+		task.spawn(function()
+			task.wait(0.03)
+			if inst.Parent then createGunESP(inst) end
+		end)
+	end
 end)
 
-RunService.RenderStepped:Connect(function()
-	updateESP()
-	showDroppedGun()
-	updateHitboxes()
+-- Also guard for tools being parented into workspace later
+Workspace.DescendantRemoving:Connect(function(inst)
+	if inst:IsA("Tool") and inst.Name == "GunDrop" then
+		local g = gunESP[inst]
+		if g then
+			safeDestroy(g.highlight)
+			safeDestroy(g.billboard)
+			gunESP[inst] = nil
+		end
+	end
 end)
 
-local toggleButton = Instance.new("ScreenGui", CoreGui)
-toggleButton.Name = "HitboxToggleUI"
-
-local frame = Instance.new("TextButton")
-frame.Size = UDim2.new(0, 160, 0, 50)
-frame.Position = UDim2.new(0, 10, 0, 10)
-frame.Text = "Hitbox Expander: OFF"
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.TextColor3 = Color3.fromRGB(255, 255, 255)
-frame.BorderSizePixel = 0
-frame.Font = Enum.Font.SourceSansBold
-frame.TextSize = 18
-frame.Draggable = true
-frame.Active = true
-frame.Parent = toggleButton
-
-frame.MouseButton1Click:Connect(function()
-	hitboxEnabled = not hitboxEnabled
-	frame.Text = hitboxEnabled and "Hitbox Expander: ON" or "Hitbox Expander: OFF"
+-- Optional: brief cleanup on local respawn so duplicates don't linger
+LocalPlayer.CharacterAdded:Connect(function()
+	-- small delay then refresh player ESP (labels/colours will update via listeners)
+	task.wait(0.05)
+	for pl, _ in pairs(playerESP) do
+		-- ensure highlight adornee still valid; recreate if necessary
+		if pl.Character then
+			updatePlayerRole(pl)
+		else
+			removePlayerESP(pl)
+		end
+	end
 end)
+
+-- Done. No RenderStepped scanning, event-driven only.
