@@ -1,12 +1,48 @@
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
 
+local espEnabled = true
 local processed = {}
 local queue = {}
 
+--// GUI Setup
+local gui = Instance.new("ScreenGui", CoreGui)
+gui.Name = "UniversalESP"
+
+local toggleBtn = Instance.new("TextButton", gui)
+toggleBtn.Size = UDim2.new(0, 150, 0, 30)
+toggleBtn.Position = UDim2.new(0, 10, 0, 10)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleBtn.Text = "ESP: ON"
+
+local refreshBtn = Instance.new("TextButton", gui)
+refreshBtn.Size = UDim2.new(0, 150, 0, 30)
+refreshBtn.Position = UDim2.new(0, 10, 0, 50)
+refreshBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+refreshBtn.TextColor3 = Color3.new(1, 1, 1)
+refreshBtn.Text = "Refresh ESP"
+
+--// Functions
+local function clearESP()
+	for model, _ in pairs(processed) do
+		if model and model.Parent then
+			if model:FindFirstChild("ESP_Highlight") then
+				model.ESP_Highlight:Destroy()
+			end
+			if model:FindFirstChild("ESP_Name") then
+				model.ESP_Name:Destroy()
+			end
+		end
+	end
+	processed = {}
+end
+
 local function addESP(model, nameText, color)
 	if not model or not model:IsA("Model") or processed[model] then return end
+
 	local root = model:FindFirstChild("HumanoidRootPart")
 	local head = model:FindFirstChild("Head") or root
 	if not head then return end
@@ -33,7 +69,6 @@ local function addESP(model, nameText, color)
 		label.BackgroundTransparency = 1
 		label.Text = nameText
 		label.TextColor3 = color
-		label.TextScaled = false
 		label.Font = Enum.Font.Arial
 		label.TextSize = 14
 		label.Parent = tag
@@ -44,31 +79,48 @@ local function addESP(model, nameText, color)
 	processed[model] = true
 end
 
-task.spawn(function()
-	while true do
-		local myChar = LocalPlayer.Character
-		if myChar and myChar:FindFirstChild("HumanoidRootPart") then
-			local myPos = myChar.HumanoidRootPart.Position
+local function refreshESP()
+	if not espEnabled then return end
 
-			for _, player in ipairs(Players:GetPlayers()) do
-				if player ~= LocalPlayer and player.Character and not processed[player.Character] then
-					addESP(player.Character, player.Name, Color3.fromRGB(255, 165, 0))
-				end
-			end
+	clearESP()
 
-			for _, model in ipairs(workspace:GetDescendants()) do
-				if model:IsA("Model") and not processed[model] and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
-					if not Players:GetPlayerFromCharacter(model) then
-						local dist = (myPos - model.HumanoidRootPart.Position).Magnitude
-						if dist < 500 then
-							addESP(model, model.Name, Color3.fromRGB(255, 0, 0))
-						end
-					end
+	local myChar = LocalPlayer.Character
+	if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+	local myPos = myChar.HumanoidRootPart.Position
+
+	-- Players
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character then
+			addESP(player.Character, player.Name, Color3.fromRGB(255, 165, 0)) -- orange
+		end
+	end
+
+	-- NPCs
+	for _, model in ipairs(workspace:GetChildren()) do
+		if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
+			if not Players:GetPlayerFromCharacter(model) then
+				local dist = (myPos - model.HumanoidRootPart.Position).Magnitude
+				if dist < 500 then
+					addESP(model, model.Name, Color3.fromRGB(255, 0, 0)) -- red
 				end
 			end
 		end
-		task.wait(1)
 	end
+end
+
+--// Connections
+toggleBtn.MouseButton1Click:Connect(function()
+	espEnabled = not espEnabled
+	toggleBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+	if not espEnabled then
+		clearESP()
+	else
+		refreshESP()
+	end
+end)
+
+refreshBtn.MouseButton1Click:Connect(function()
+	refreshESP()
 end)
 
 RunService.RenderStepped:Connect(function()
@@ -77,3 +129,6 @@ RunService.RenderStepped:Connect(function()
 		pcall(add)
 	end
 end)
+
+-- Initial load
+refreshESP()
