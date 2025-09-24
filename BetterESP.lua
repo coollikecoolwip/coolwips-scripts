@@ -1,21 +1,27 @@
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
+
+-- Determine correct GUI parent
 local CoreGui = game:GetService("CoreGui")
+local guiParent = CoreGui:FindFirstChildOfClass("ScreenGui") and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
 
 local espEnabled = true
 local processed = {}
 local queue = {}
 
---// GUI Setup
-local gui = Instance.new("ScreenGui", CoreGui)
+-- GUI Setup
+local gui = Instance.new("ScreenGui")
 gui.Name = "UniversalESP"
+gui.ResetOnSpawn = false
+gui.Parent = guiParent
 
 local toggleBtn = Instance.new("TextButton", gui)
 toggleBtn.Size = UDim2.new(0, 150, 0, 30)
 toggleBtn.Position = UDim2.new(0, 10, 0, 10)
 toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleBtn.Font = Enum.Font.SourceSansBold
 toggleBtn.Text = "ESP: ON"
 
 local refreshBtn = Instance.new("TextButton", gui)
@@ -23,23 +29,27 @@ refreshBtn.Size = UDim2.new(0, 150, 0, 30)
 refreshBtn.Position = UDim2.new(0, 10, 0, 50)
 refreshBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 refreshBtn.TextColor3 = Color3.new(1, 1, 1)
+refreshBtn.Font = Enum.Font.SourceSansBold
 refreshBtn.Text = "Refresh ESP"
 
---// Functions
-local function clearESP()
-	for model, _ in pairs(processed) do
-		if model and model.Parent then
-			if model:FindFirstChild("ESP_Highlight") then
-				model.ESP_Highlight:Destroy()
-			end
-			if model:FindFirstChild("ESP_Name") then
-				model.ESP_Name:Destroy()
+-- Clear ESP function
+local function clearESP(model)
+	if model and processed[model] then
+		if model:FindFirstChild("ESP_Highlight") then model.ESP_Highlight:Destroy() end
+		if model:FindFirstChild("ESP_Name") then model.ESP_Name:Destroy() end
+		processed[model] = nil
+	else
+		for mdl, _ in pairs(processed) do
+			if mdl and mdl.Parent then
+				if mdl:FindFirstChild("ESP_Highlight") then mdl.ESP_Highlight:Destroy() end
+				if mdl:FindFirstChild("ESP_Name") then mdl.ESP_Name:Destroy() end
 			end
 		end
+		processed = {}
 	end
-	processed = {}
 end
 
+-- Add ESP function
 local function addESP(model, nameText, color)
 	if not model or not model:IsA("Model") or processed[model] then return end
 
@@ -79,36 +89,35 @@ local function addESP(model, nameText, color)
 	processed[model] = true
 end
 
+-- Refresh ESP
 local function refreshESP()
 	if not espEnabled then return end
-
 	clearESP()
 
 	local myChar = LocalPlayer.Character
 	if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+
 	local myPos = myChar.HumanoidRootPart.Position
 
-	-- Players
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer and player.Character then
-			addESP(player.Character, player.Name, Color3.fromRGB(255, 165, 0)) -- orange
+			addESP(player.Character, player.Name, Color3.fromRGB(255, 165, 0))
 		end
 	end
 
-	-- NPCs
 	for _, model in ipairs(workspace:GetChildren()) do
 		if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
 			if not Players:GetPlayerFromCharacter(model) then
 				local dist = (myPos - model.HumanoidRootPart.Position).Magnitude
 				if dist < 500 then
-					addESP(model, model.Name, Color3.fromRGB(255, 0, 0)) -- red
+					addESP(model, model.Name, Color3.fromRGB(255, 0, 0))
 				end
 			end
 		end
 	end
 end
 
---// Connections
+-- Buttons
 toggleBtn.MouseButton1Click:Connect(function()
 	espEnabled = not espEnabled
 	toggleBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
@@ -119,16 +128,39 @@ toggleBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
-refreshBtn.MouseButton1Click:Connect(function()
-	refreshESP()
-end)
+refreshBtn.MouseButton1Click:Connect(refreshESP)
 
+-- Render loop
 RunService.RenderStepped:Connect(function()
 	if #queue > 0 then
-		local add = table.remove(queue, 1)
-		pcall(add)
+		local addFunc = table.remove(queue, 1)
+		pcall(addFunc)
 	end
 end)
 
--- Initial load
+-- Handle ESP persistence after death
+local function trackPlayer(player)
+	player.CharacterAdded:Connect(function(character)
+		refreshESP()
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.Died:Connect(function()
+				clearESP(character)
+			end)
+		end
+	end)
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do
+	if plr ~= LocalPlayer then
+		trackPlayer(plr)
+	end
+end
+
+Players.PlayerAdded:Connect(trackPlayer)
+Players.PlayerRemoving:Connect(function(player)
+	clearESP(player.Character)
+end)
+
+-- Initial ESP
 refreshESP()
