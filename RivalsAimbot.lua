@@ -116,7 +116,7 @@ toggleButton.MouseButton1Click:Connect(toggleAimbot)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
 
-    if input.KeyCode == Enum.KeyCode.R then
+    if input.KeyCode == Enum.KeyCode.Q then
         toggleAimbot()
     elseif input.KeyCode == Enum.KeyCode.Z then
         fov = math.max(1, fov - 5)
