@@ -1,3 +1,4 @@
+local refreshInterval = 5
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
@@ -215,11 +216,17 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
-RunService.Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function(deltaTime)
     if not espEnabled then
         for model in pairs(processed) do
             clearESP(model)
         end
+    end
+
+    refreshInterval = refreshInterval - deltaTime
+    if refreshInterval <= 0 then
+        refreshESP()
+        refreshInterval = 5 -- Reset the interval
     end
 end)
 
