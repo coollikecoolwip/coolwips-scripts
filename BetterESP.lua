@@ -2,16 +2,14 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Teams = game:GetService("Teams")
 
 -- Toggles
 local espEnabled = true
 local healthEnabled = false
 local menuVisible = false
-local teamModeEnabled = false -- Added Team Mode Toggle
+local teamModeEnabled = false
 
 local processed = {}
-local queue = {}
 
 -- GUI Setup
 local gui = Instance.new("ScreenGui")
@@ -20,53 +18,34 @@ gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 gui.Enabled = false
 
--- Container for dragging buttons
+-- Container
 local container = Instance.new("Frame", gui)
 container.BackgroundTransparency = 0.8
 container.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 container.BorderSizePixel = 0
-container.Size = UDim2.new(0, 200, 0, 180) -- Extended size
+container.Size = UDim2.new(0, 200, 0, 180)
 container.Position = UDim2.new(0.5, -100, 0.5, -90)
 container.Active = true
 container.Draggable = true
 
-local toggleBtn = Instance.new("TextButton", container)
-toggleBtn.Size = UDim2.new(0, 150, 0, 30)
-toggleBtn.Position = UDim2.new(0, 25, 0, 10)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-toggleBtn.TextColor3 = Color3.new(1, 1, 1)
-toggleBtn.Font = Enum.Font.SourceSansBold
-toggleBtn.Text = "ESP: ON"
-toggleBtn.TextSize = 16
+local function newButton(parent, y, text)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(0, 150, 0, 30)
+    btn.Position = UDim2.new(0, 25, 0, y)
+    btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 16
+    btn.Text = text
+    return btn
+end
 
-local refreshBtn = Instance.new("TextButton", container)
-refreshBtn.Size = UDim2.new(0, 150, 0, 30)
-refreshBtn.Position = UDim2.new(0, 25, 0, 50)
-refreshBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-toggleBtn.TextColor3 = Color3.new(1, 1, 1)
-refreshBtn.Font = Enum.Font.SourceSansBold
-refreshBtn.Text = "Refresh ESP"
-refreshBtn.TextSize = 16
+local toggleBtn = newButton(container, 10, "ESP: ON")
+local refreshBtn = newButton(container, 50, "Refresh ESP")
+local healthBtn = newButton(container, 90, "Health: OFF")
+local teamModeBtn = newButton(container, 130, "Team Mode: OFF")
 
-local healthBtn = Instance.new("TextButton", container)
-healthBtn.Size = UDim2.new(0, 150, 0, 30)
-healthBtn.Position = UDim2.new(0, 25, 0, 90)
-healthBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-healthBtn.TextColor3 = Color3.new(1, 1, 1)
-healthBtn.Font = Enum.Font.SourceSansBold
-healthBtn.Text = "Health: OFF"
-healthBtn.TextSize = 16
-
-local teamModeBtn = Instance.new("TextButton", container)
-teamModeBtn.Size = UDim2.new(0, 150, 0, 30)
-teamModeBtn.Position = UDim2.new(0, 25, 0, 130) -- Changed position
-teamModeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-healthBtn.TextColor3 = Color3.new(1, 1, 1)
-teamModeBtn.Font = Enum.Font.SourceSansBold
-teamModeBtn.Text = "Team Mode: OFF"
-teamModeBtn.TextSize = 16
-
--- Clear ESP for a specific model
+-- Clear ESP
 local function clearESP(model)
     if model and processed[model] then
         if model:FindFirstChild("ESP_Highlight") then
@@ -82,30 +61,26 @@ end
 -- Add ESP
 local function addESP(model, nameText, color)
     if not model or not model:IsA("Model") or processed[model] then return end
-
     local head = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
     local humanoid = model:FindFirstChild("Humanoid")
     if not head then return end
 
-    -- Highlight
-    local highlight = Instance.new("Highlight")
+    local highlight = Instance.new("Highlight", model)
     highlight.Name = "ESP_Highlight"
     highlight.FillTransparency = 1
     highlight.OutlineTransparency = 0
     highlight.OutlineColor = color
     highlight.Adornee = model
     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.Parent = model
 
-    -- Billboard GUI name tag
-    local tag = Instance.new("BillboardGui")
+    local tag = Instance.new("BillboardGui", model)
     tag.Name = "ESP_Name"
     tag.Adornee = head
     tag.Size = UDim2.new(0, 120, 0, 25)
     tag.StudsOffset = Vector3.new(0, 2.5, 0)
     tag.AlwaysOnTop = true
 
-    local label = Instance.new("TextLabel")
+    local label = Instance.new("TextLabel", tag)
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.TextColor3 = color
@@ -113,9 +88,7 @@ local function addESP(model, nameText, color)
     label.TextSize = 18
     label.Text = nameText .. (healthEnabled and humanoid and (" | " .. math.floor(humanoid.Health)) or "")
 
-    label.Parent = tag
-
-    local function updateHealthText()
+    local function update()
         if humanoid and healthEnabled then
             label.Text = nameText .. " | " .. math.floor(humanoid.Health)
         else
@@ -124,41 +97,49 @@ local function addESP(model, nameText, color)
     end
 
     if humanoid then
-        humanoid.HealthChanged:Connect(updateHealthText)
+        humanoid.HealthChanged:Connect(update)
     end
 
-    tag.Parent = model
     processed[model] = true
-
-    updateHealthText() -- Initial update
+    update()
 end
 
--- Get Team Color
+-- Get Team Color — checks name tag colors first, then TeamColor
 local function getTeamColor(player)
+    if teamModeEnabled and player.Character then
+        local head = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")
+        if head then
+            for _, child in pairs(head:GetChildren()) do
+                if child:IsA("BillboardGui") then
+                    local label = child:FindFirstChildOfClass("TextLabel")
+                    if label and label.TextColor3 then
+                        return label.TextColor3
+                    end
+                end
+            end
+        end
+    end
     if teamModeEnabled and player.Team then
         return player.TeamColor.Color
     else
-        return Color3.fromRGB(255, 165, 0) -- Default orange
+        return Color3.fromRGB(255, 165, 0)
     end
 end
 
 -- Refresh ESP
 local function refreshESP()
     if not espEnabled then return end
-
     local myChar = LocalPlayer.Character
     if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
     local myPos = myChar.HumanoidRootPart.Position
 
-    -- Clear processed table before refreshing
-    for model, _ in pairs(processed) do
+    for model in pairs(processed) do
         clearESP(model)
     end
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
-            local teamColor = getTeamColor(player)
-            addESP(player.Character, player.Name, teamColor)
+            addESP(player.Character, player.Name, getTeamColor(player))
         end
     end
 
@@ -174,12 +155,12 @@ local function refreshESP()
     end
 end
 
--- Button Events
+-- Button Actions
 toggleBtn.MouseButton1Click:Connect(function()
     espEnabled = not espEnabled
     toggleBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
     if not espEnabled then
-        for model, _ in pairs(processed) do
+        for model in pairs(processed) do
             clearESP(model)
         end
     else
@@ -192,7 +173,7 @@ refreshBtn.MouseButton1Click:Connect(refreshESP)
 healthBtn.MouseButton1Click:Connect(function()
     healthEnabled = not healthEnabled
     healthBtn.Text = healthEnabled and "Health: ON" or "Health: OFF"
-    refreshESP() -- Auto refresh on health toggle
+    refreshESP()
 end)
 
 teamModeBtn.MouseButton1Click:Connect(function()
@@ -203,54 +184,23 @@ end)
 
 -- Track Players
 local function trackPlayer(player)
-    local function handleCharacter(character)
-        if not espEnabled then return end
-
-        -- Add ESP as soon as they spawn
-        local teamColor = getTeamColor(player)
-        addESP(character, player.Name, teamColor)
-    end
-
-    -- Handle existing character
-    if player.Character then
-        if processed[player.Character] then
-            clearESP(player.Character)
-        end
-        if espEnabled then
-            handleCharacter(player.Character)
-        end
-    end
-
-    -- Handle character added event
     player.CharacterAdded:Connect(function(character)
-        -- Wait for humanoid and root part to exist before adding ESP
         character:WaitForChild("Humanoid", 5)
         character:WaitForChild("HumanoidRootPart", 5)
-
         if espEnabled then
-            handleCharacter(character)
+            addESP(character, player.Name, getTeamColor(player))
         end
     end)
-
-    -- Remove ESP on death
-    if player.Character then
-        player.Character.Humanoid.Died:Connect(function()
-            clearESP(player.Character)
-        end)
-    end
-
-    -- Handle character removing event
-    player.CharacterRemoving:Connect(clearESP)
+    player.CharacterRemoving:Connect(function(character)
+        clearESP(character)
+    end)
 end
 
--- Iterate through existing players
 for _, player in ipairs(Players:GetPlayers()) do
     if player ~= LocalPlayer then
         trackPlayer(player)
     end
 end
-
--- Handle new players joining.
 
 Players.PlayerAdded:Connect(function(player)
     if player ~= LocalPlayer then
@@ -258,22 +208,19 @@ Players.PlayerAdded:Connect(function(player)
     end
 end)
 
--- Menu Toggle
-UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+UserInputService.InputBegan:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.RightShift then
         menuVisible = not menuVisible
         gui.Enabled = menuVisible
     end
 end)
 
--- Ensure no leftover ESP after toggle off
 RunService.Heartbeat:Connect(function()
     if not espEnabled then
-        for model, _ in pairs(processed) do
+        for model in pairs(processed) do
             clearESP(model)
         end
     end
 end)
 
--- Initial ESP
 refreshESP()
