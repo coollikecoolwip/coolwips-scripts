@@ -186,18 +186,6 @@ local SkidFling = function(TargetPlayer)
         Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
         workspace.CurrentCamera.CameraSubject = Humanoid
         
-        repeat
-            RootPart.CFrame = getgenv().OldPos * CFrame.new(0, .5, 0)
-            Character:SetPrimaryPartCFrame(getgenv().OldPos * CFrame.new(0, .5, 0))
-            Humanoid:ChangeState("GettingUp")
-            table.foreach(Character:GetChildren(), function(_, x)
-                if x:IsA("BasePart") then
-                    x.Velocity, x.RotVelocity = Vector3.new(), Vector3.new()
-                end
-            end)
-            task.wait()
-        until (RootPart.Position - getgenv().OldPos.p).Magnitude < 25
-        workspace.FallenPartsDestroyHeight = getgenv().FPDH
     else
         return Message("Error Occurred", "Random error", 5)
     end
@@ -268,6 +256,17 @@ flingAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 flingAllButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 flingAllButton.BorderSizePixel = 0
 flingAllButton.Parent = guiFrame
+
+-- Loop Fling All Button (continuous fling)
+local loopFlingAllButton = Instance.new("TextButton")
+loopFlingAllButton.Name = "LoopFlingAllButton"
+loopFlingAllButton.Parent = guiFrame
+loopFlingAllButton.Size = UDim2.new(0, 75, 0, 30)
+loopFlingAllButton.Position = UDim2.new(0.5, -42.5, 0, 340) -- Adjusted position below Fling All
+loopFlingAllButton.Text = "Loop Fling All"
+loopFlingAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+loopFlingAllButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+loopFlingAllButton.BorderSizePixel = 0
 
 local BlacklistedUserIds = {} -- Initialize the blacklist table
 
@@ -358,6 +357,51 @@ flingAllButton.MouseButton1Click:Connect(function()
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= Player and not table.find(BlacklistedUserIds, player.UserId) then
             SkidFling(player)
+        end
+    end
+end)
+
+-- Loop Fling Functionality
+local FlingAllLoopEnabled = false
+
+loopFlingAllButton.MouseButton1Click:Connect(function()
+    FlingAllLoopEnabled = not FlingAllLoopEnabled
+    if FlingAllLoopEnabled then
+        loopFlingAllButton.Text = "Stop Loop Fling"
+        loopFlingAllButton.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+
+        task.spawn(function()
+            while FlingAllLoopEnabled do
+                for _, player in ipairs(Players:GetPlayers()) do
+                    if player ~= Player and not table.find(BlacklistedUserIds, player.UserId) then
+                        SkidFling(player)
+                    end
+                    task.wait(0.1) -- Short delay to prevent rate limits
+                end
+                task.wait(1) -- Delay between loops
+            end
+            loopFlingAllButton.Text = "Loop Fling All"
+            loopFlingAllButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        end)
+    else
+        loopFlingAllButton.Text = "Loop Fling All"
+        loopFlingAllButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+
+        -- Return to original position only when loop is stopped
+        local Character = Player.Character
+        local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+        local RootPart = Humanoid and Humanoid.RootPart
+
+        if RootPart then
+            RootPart.CFrame = getgenv().OldPos * CFrame.new(0, .5, 0)
+            Character:SetPrimaryPartCFrame(getgenv().OldPos * CFrame.new(0, .5, 0))
+            Humanoid:ChangeState("GettingUp")
+            table.foreach(Character:GetChildren(), function(_, x)
+                if x:IsA("BasePart") then
+                    x.Velocity, x.RotVelocity = Vector3.new(), Vector3.new()
+                end
+            end)
+            task.wait()
         end
     end
 end)
