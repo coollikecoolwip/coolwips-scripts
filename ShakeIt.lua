@@ -1,26 +1,29 @@
+-- Roblox Animation Controller - Universal + Styled UI
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
-local self = {} -- encapsulation of variables
+-- State table
+local state = {
+    char = nil,
+    hrp = nil,
+    currentTrack = nil,
+    isPlaying = false,
+    toggleButton = nil,
+    refreshButton = nil,
+}
 
-self.originalRot = nil
-self.char = nil
-self.hrp = nil
-self.currentTrack = nil
-self.isPlaying = false
-self.toggleButton = nil
-self.refreshButton = nil
+-------------------------
+-- Utility Functions
+
+-------------------------
 
 local function loadAnimation(character)
     local humanoid = character:WaitForChild("Humanoid")
-    local animator = humanoid:FindFirstChildOfClass("Animator")
-    if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = humanoid
-    end
+    local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
     local anim = Instance.new("Animation")
-    anim.AnimationId = "rbxassetid://136720812089001"
+    anim.AnimationId = "rbxassetid://136720812089001" -- Replace with your animation ID
     return animator:LoadAnimation(anim)
 end
 
@@ -31,29 +34,34 @@ local function rotateCharacter(character, degrees)
     end
 end
 
+-------------------------
+-- Animation Controls
+
+-------------------------
+
 local function startAnimation()
-    if self.char and self.currentTrack and not self.currentTrack.IsPlaying then
-        self.currentTrack.Looped = true
-        self.currentTrack.Priority = Enum.AnimationPriority.Action
-        self.currentTrack:Play(0, 99)
-        self.currentTrack:AdjustSpeed(1)
-        rotateCharacter(self.char, 180)
-        self.isPlaying = true
-        if self.toggleButton then
-            self.toggleButton.Text = "Stop Animation" -- Corrected
-            self.toggleButton.BackgroundColor3 = Color3.fromRGB(255, 70, 70) -- Corrected
+    if state.char and state.currentTrack and not state.currentTrack.IsPlaying then
+        state.currentTrack.Looped = true
+        state.currentTrack.Priority = Enum.AnimationPriority.Action
+        state.currentTrack:Play(0, 99)
+        state.currentTrack:AdjustSpeed(1)
+        rotateCharacter(state.char, 180)
+        state.isPlaying = true
+        if state.toggleButton then
+            state.toggleButton.Text = "⏹ Stop Animation"
+            state.toggleButton.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
         end
         print("Animation Started")
     end
 end
 
 local function stopAnimation()
-    if self.currentTrack and self.currentTrack.IsPlaying then
-        self.currentTrack:Stop()
-        self.isPlaying = false
-        if self.toggleButton then
-            self.toggleButton.Text = "Start Animation" -- Corrected
-            self.toggleButton.BackgroundColor3 = Color3.fromRGB(70, 200, 70) -- Corrected
+    if state.currentTrack and state.currentTrack.IsPlaying then
+        state.currentTrack:Stop()
+        state.isPlaying = false
+        if state.toggleButton then
+            state.toggleButton.Text = "▶ Start Animation"
+            state.toggleButton.BackgroundColor3 = Color3.fromRGB(70, 200, 70)
         end
         print("Animation Stopped")
     end
@@ -62,87 +70,101 @@ end
 local function refreshAnimation()
     print("Refreshing animation system...")
     stopAnimation()
-    if self.char then
-        self.currentTrack = loadAnimation(self.char)
+    if state.char then
+        state.currentTrack = loadAnimation(state.char)
     end
-    self.isPlaying = false
-    print("Animation system refreshed. Ready to start again.")
+    state.isPlaying = false
 end
 
 local function resetAnimationSystem()
     stopAnimation()
-    self.char = player.Character
-    if self.char then
-        self.hrp = self.char:FindFirstChild("HumanoidRootPart")
-        if self.hrp then
-            self.originalRot = self.hrp.CFrame - self.hrp.Position
-        end
-        self.currentTrack = loadAnimation(self.char)
-    end
-    self.isPlaying = false
+    state.char = player.Character or player.CharacterAdded:Wait()
+    state.hrp = state.char:FindFirstChild("HumanoidRootPart")
+    state.currentTrack = loadAnimation(state.char)
 end
 
--- UI Setup (Create Buttons Once)
-local playerGui = player:WaitForChild("PlayerGui")
-local screenGui = playerGui:WaitForChild("ScreenGui") or Instance.new("ScreenGui", playerGui)
-screenGui.IgnoreGuiInset = true -- Allow GUI to overlap the top bar
+-------------------------
+-- UI Creation
 
--- Wait for the screenGui to be fully loaded
+-------------------------
 
-self.toggleButton = Instance.new("TextButton")
-self.toggleButton.Size = UDim2.new(0, 140, 0, 40)
-self.toggleButton.AnchorPoint = Vector2.new(1, 0) -- Anchor to right
-self.toggleButton.Position = UDim2.new(1, -150, 0, 10)
-self.toggleButton.Text = "Start Animation"
-self.toggleButton.BackgroundColor3 = Color3.fromRGB(70, 200, 70)
-self.toggleButton.TextColor3 = Color3.new(1, 1, 1)
-self.toggleButton.Parent = screenGui
+local function createUI()
+    local playerGui = player:WaitForChild("PlayerGui")
 
-self.refreshButton = Instance.new("TextButton")
-self.refreshButton.Size = UDim2.new(0, 140, 0, 40)
-self.refreshButton.AnchorPoint = Vector2.new(1, 0) -- Anchor to right
-self.refreshButton.Position = UDim2.new(1, -150, 0, 60)
-self.refreshButton.Text = "Refresh Animation"
-self.refreshButton.BackgroundColor3 = Color3.fromRGB(70, 70, 200)
-self.refreshButton.TextColor3 = Color3.new(1, 1, 1)
-self.refreshButton.Parent = screenGui
+    -- Remove old UI if exists
+    local existing = playerGui:FindFirstChild("AnimationControllerGUI")
+    if existing then existing:Destroy() end
 
-self.toggleButton.MouseButton1Click:Connect(function()
-    if self.isPlaying then
-        stopAnimation()
-    else
-        startAnimation()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AnimationControllerGUI"
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent = playerGui
+
+    local function createButton(text, posY, color)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 160, 0, 50)
+        btn.Position = UDim2.new(1, -180, 0, posY)
+        btn.AnchorPoint = Vector2.new(1, 0)
+        btn.BackgroundColor3 = color
+        btn.Text = text
+        btn.TextColor3 = Color3.new(1, 1, 1)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 16
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 8)
+        corner.Parent = btn
+
+        local shadow = Instance.new("UIStroke")
+        shadow.Thickness = 2
+        shadow.Color = Color3.fromRGB(20, 20, 20)
+        shadow.Parent = btn
+
+        btn.Parent = screenGui
+
+        return btn
     end
-end)
 
-self.refreshButton.MouseButton1Click:Connect(function()
-    refreshAnimation()
-end)
+    state.toggleButton = createButton("▶ Start Animation", 10, Color3.fromRGB(70, 200, 70))
+    state.refreshButton = createButton("🔄 Refresh Animation", 65, Color3.fromRGB(70, 70, 200))
 
--- Keybinds
-local function handleInput(input, gameProcessedEvent)
-    if gameProcessedEvent then return end
-
-    if input.KeyCode == Enum.KeyCode.Z then  -- Change 'Z' to your desired key
-        if self.isPlaying then
+    state.toggleButton.MouseButton1Click:Connect(function()
+        if state.isPlaying then
             stopAnimation()
         else
             startAnimation()
         end
-    elseif input.KeyCode == Enum.KeyCode.X then  -- Change 'X' to your desired key
+    end)
+
+    state.refreshButton.MouseButton1Click:Connect(function()
+        refreshAnimation()
+    end)
+end
+
+-------------------------
+-- Keybinds
+
+-------------------------
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.Z then
+        if state.isPlaying then stopAnimation() else startAnimation() end
+    elseif input.KeyCode == Enum.KeyCode.X then
         refreshAnimation()
     end
-end
+end)
 
-UserInputService.InputBegan:Connect(handleInput)
+-------------------------
+-- Character Handling
 
--- Character Added Event
-local function onCharacterAdded(character)
+-------------------------
+
+player.CharacterAdded:Connect(function()
     resetAnimationSystem()
-end
+    createUI()
+end)
 
--- Initial Setup and Respawn Handling
-player.CharacterAdded:Connect(onCharacterAdded)
-
--- Initialize the animation when the character first spawns
+-- Initial setup
 resetAnimationSystem()
+createUI()
