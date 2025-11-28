@@ -10,7 +10,8 @@ local healthEnabled = false
 local menuVisible = false
 local teamModeEnabled = false
 
-local processed = {}
+local espData = {} -- Stores ESP info
+local targetDistance = 1000 -- ESP target distance
 
 -- GUI Setup
 local gui = Instance.new("ScreenGui")
@@ -48,48 +49,54 @@ local teamModeBtn = newButton(container, 130, "Team Mode: OFF")
 
 -- Clear ESP
 local function clearESP(model)
-    if model and processed[model] then
-        if model:FindFirstChild("ESP_Highlight") then
-            model.ESP_Highlight:Destroy()
+    if espData[model] then
+        if espData[model].highlight then
+            espData[model].highlight:Destroy()
         end
-        if model:FindFirstChild("ESP_Name") then
-            model.ESP_Name:Destroy()
+        if espData[model].tag then
+            espData[model].tag:Destroy()
         end
-        processed[model] = nil
+        espData[model] = nil
     end
 end
 
 -- Add ESP
 local function addESP(model, nameText, color)
-    if not model or not model:IsA("Model") or processed[model] then return end
+    if not model or not model:IsA("Model") then return end
     local head = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
     local humanoid = model:FindFirstChild("Humanoid")
+
     if not head then return end
 
-    local highlight = Instance.new("Highlight", model)
+    -- Create Highlight
+    local highlight = Instance.new("Highlight")
     highlight.Name = "ESP_Highlight"
     highlight.FillTransparency = 1
     highlight.OutlineTransparency = 0
     highlight.OutlineColor = color
     highlight.Adornee = model
     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = model
 
-    local tag = Instance.new("BillboardGui", model)
+    -- Create BillboardGui
+    local tag = Instance.new("BillboardGui")
     tag.Name = "ESP_Name"
     tag.Adornee = head
     tag.Size = UDim2.new(0, 120, 0, 25)
     tag.StudsOffset = Vector3.new(0, 2.5, 0)
     tag.AlwaysOnTop = true
+    tag.Parent = model
 
-    local label = Instance.new("TextLabel", tag)
+    local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.TextColor3 = color
     label.Font = Enum.Font.ArialBold
     label.TextSize = 18
     label.Text = nameText .. (healthEnabled and humanoid and (" | " .. math.floor(humanoid.Health)) or "")
+    label.Parent = tag
 
-    local function update()
+    local function updateHealth()
         if humanoid and healthEnabled then
             label.Text = nameText .. " | " .. math.floor(humanoid.Health)
         else
@@ -98,14 +105,42 @@ local function addESP(model, nameText, color)
     end
 
     if humanoid then
-        humanoid.HealthChanged:Connect(update)
+        humanoid.HealthChanged:Connect(updateHealth)
     end
 
-    processed[model] = true
-    update()
+    espData[model] = {
+        highlight = highlight,
+        tag = tag,
+        label = label,
+        name = nameText,
+        color = color
+    }
+
+    updateHealth()
 end
 
--- Get Team Color — checks name tag colors first, then TeamColor
+-- Update ESP (only if changed)
+local function updateESP(model, nameText, color)
+    if not espData[model] then return end
+
+    local data = espData[model]
+    local humanoid = model:FindFirstChild("Humanoid")
+
+    if data.name ~= nameText or data.color ~= color then
+        data.name = nameText
+        data.color = color
+        data.label.TextColor3 = color
+        data.highlight.OutlineColor = color
+    end
+
+    if humanoid and healthEnabled then
+        data.label.Text = nameText .. " | " .. math.floor(humanoid.Health)
+    else
+        data.label.Text = nameText
+    end
+end
+
+-- Get Team Color
 local function getTeamColor(player)
     if teamModeEnabled and player.Character then
         local head = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")
@@ -127,31 +162,76 @@ local function getTeamColor(player)
     end
 end
 
+-- Recursive NPC finder
+local function findHumanoidModels(parent)
+    local models = {}
+    for _, obj in ipairs(parent:GetChildren()) do
+        if obj:IsA("Model") then
+            local humanoid = obj:FindFirstChildOfClass("Humanoid")
+            local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Head")
+            if humanoid and root then
+                table.insert(models, obj)
+            end
+        end
+        for _, child in ipairs(findHumanoidModels(obj)) do
+            table.insert(models, child)
+        end
+    end
+    return models
+end
+
 -- Refresh ESP
 local function refreshESP()
-    if not espEnabled then return end
+    if not espEnabled then
+        for model in pairs(espData) do
+            clearESP(model)
+        end
+        return
+    end
+
     local myChar = LocalPlayer.Character
     if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
     local myPos = myChar.HumanoidRootPart.Position
 
-    for model in pairs(processed) do
-        clearESP(model)
-    end
+    local currentTargets = {}
 
+    -- Tag Players
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
-            addESP(player.Character, player.Name, getTeamColor(player))
+            local character = player.Character
+            currentTargets[character] = true
+            local color = getTeamColor(player)
+
+            if not espData[character] then
+                addESP(character, player.Name, color)
+            else
+                updateESP(character, player.Name, color)
+            end
         end
     end
 
-    for _, model in ipairs(workspace:GetChildren()) do
-        if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
-            if not Players:GetPlayerFromCharacter(model) then
-                local dist = (myPos - model.HumanoidRootPart.Position).Magnitude
-                if dist < 500 then
+    -- Tag NPCs
+    local npcModels = findHumanoidModels(workspace)
+    for _, model in ipairs(npcModels) do
+        if not Players:GetPlayerFromCharacter(model) then
+            currentTargets[model] = true
+            local dist = (myPos - (model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")).Position).Magnitude
+            if dist <= targetDistance then
+                if not espData[model] then
                     addESP(model, model.Name, Color3.fromRGB(255, 0, 0))
+                else
+                    updateESP(model, model.Name, Color3.fromRGB(255, 0, 0))
                 end
+            else
+                clearESP(model)
             end
+        end
+    end
+
+    -- Clear Missing
+    for model in pairs(espData) do
+        if not currentTargets[model] then
+            clearESP(model)
         end
     end
 end
@@ -161,7 +241,7 @@ toggleBtn.MouseButton1Click:Connect(function()
     espEnabled = not espEnabled
     toggleBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
     if not espEnabled then
-        for model in pairs(processed) do
+        for model in pairs(espData) do
             clearESP(model)
         end
     else
@@ -189,7 +269,8 @@ local function trackPlayer(player)
         character:WaitForChild("Humanoid", 5)
         character:WaitForChild("HumanoidRootPart", 5)
         if espEnabled then
-            addESP(character, player.Name, getTeamColor(player))
+            local color = getTeamColor(player)
+            addESP(character, player.Name, color)
         end
     end)
     player.CharacterRemoving:Connect(function(character)
@@ -217,16 +298,12 @@ UserInputService.InputBegan:Connect(function(input)
 end)
 
 RunService.Heartbeat:Connect(function(deltaTime)
-    if not espEnabled then
-        for model in pairs(processed) do
-            clearESP(model)
+    if espEnabled then
+        refreshInterval = refreshInterval - deltaTime
+        if refreshInterval <= 0 then
+            refreshESP()
+            refreshInterval = 5
         end
-    end
-
-    refreshInterval = refreshInterval - deltaTime
-    if refreshInterval <= 0 then
-        refreshESP()
-        refreshInterval = 5 -- Reset the interval
     end
 end)
 
