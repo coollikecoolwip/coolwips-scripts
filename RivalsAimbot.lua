@@ -166,9 +166,11 @@ local function getNearestPlayer()
         if player ~= localPlayer and
            player.Character and
            player.Character:FindFirstChild("HumanoidRootPart") and
-           isPlayerVisible(player) and -- Add visibility check
-           hasLineOfSight(player) and -- Add line of sight check
-           not blacklist[player.Name] then -- Blacklist Check
+           player.Character:FindFirstChild("Humanoid") and --Ensure Humanoid exists
+           player.Character.Humanoid.Health > 0 and -- Add health check
+           isPlayerVisible(player) and
+           hasLineOfSight(player) and
+           not blacklist[player.Name] then
 
             local distance = (localPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
 
