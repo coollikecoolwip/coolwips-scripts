@@ -1,0 +1,70 @@
+-- Infinite Yield Plugin: Say Command (!s) - Auto-Enabled
+
+local TextChatService = game:GetService("TextChatService")
+local Players = game:GetService("Players")
+
+local player = Players.LocalPlayer
+
+-- Check if game uses new chat system
+if TextChatService.ChatVersion ~= Enum.ChatVersion.TextChatService then
+    warn("[SayCommand] This game is not using the new Roblox chat system. Plugin disabled.")
+    return
+end
+
+local function setupSayCommand()
+    if not player or not player.Parent then return end -- Ensure player exists
+
+    local general = TextChatService.TextChannels:WaitForChild("RBXGeneral")
+
+    -- Connect message listener
+    local connection = TextChatService.MessageReceived:Connect(function(message)
+        -- Prevent echo / self-messages
+        if not message.TextSource or message.TextSource.UserId == player.UserId then return end
+
+        local text = message.Text
+        -- Check for trigger command
+        if text:sub(1, 3) == "!s " then
+            local sayText = text:sub(4) -- Get the message content after "!s "
+            if sayText ~= "" then
+                pcall(function()
+                    general:SendAsync(sayText) -- Send the message to public chat
+                end)
+            end
+        end
+    end)
+
+    return connection -- Return the connection so it can be disconnected if needed
+end
+
+-- Automatically enable when the plugin loads
+local sayCommandConnection = setupSayCommand()
+
+-- Optional: Add a command to disable it manually if desired
+-- You can still type "saycmd off" in chat IF you add this to the Commands table:
+--
+-- Commands = {
+--     saycmd = {
+--         ListName = "saycmd [off]",
+--         Description = "Manually disable !s say command",
+--         Aliases = {},
+--         Function = function(args, speaker)
+--             if args[1] == "off" then
+--                 if sayCommandConnection then
+--                     sayCommandConnection:Disconnect()
+--                     sayCommandConnection = nil
+--                     print("[SayCommand] Disabled manually.")
+--                 else
+--                     warn("[SayCommand] Already disabled.")
+--                 end
+--             else
+--                 warn("Usage: saycmd off")
+--             end
+--         end
+--     }
+-- }
+--
+-- If you add the above, remember to wrap the entire plugin's return value
+-- in `return { Name = "...", Description = "...", Commands = { ... } }` as before.
+-- For now, it's set to auto-enable and stay enabled.
+
+print("[SayCommand] Plugin loaded and auto-enabled.")
