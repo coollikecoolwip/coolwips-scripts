@@ -48,7 +48,7 @@ local PLAYER_COLORS = {
 
 local NPC_COLORS = PLAYER_COLORS
 
-local playerColorIndex = 1
+local playerColorIndex = 5
 local npcColorIndex = 1
 
 local PLAYER_COLOR = PLAYER_COLORS[playerColorIndex].color
