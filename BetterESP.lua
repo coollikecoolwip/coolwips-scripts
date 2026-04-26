@@ -96,7 +96,7 @@ end
 
 local espBtn  = makeButton(15,"ESP: ON")
 local hpBtn   = makeButton(55,"Health: OFF")
-local distBtn = makeButton(95,"Distance: ON") -- New button for distance toggle
+local distBtn = makeButton(95,"Distance: OFF") -- New button for distance toggle
 local teamBtn = makeButton(135,"Team Mode: OFF")
 local npcBtn  = makeButton(175,"NPCs: OFF")
 local pColBtn = makeButton(215,"Player Color: "..PLAYER_COLORS[1].name)
