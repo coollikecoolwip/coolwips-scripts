@@ -1,7 +1,7 @@
---// Universal ESP v3.2 (Expanded Color Selection)
+--// Universal ESP v3.4 (Distance Toggle Added)
 --// Menu Toggle Key: P
 --// Player ESP + NPC ESP (NPC cache, no workspace scanning)
---// Cool draggable UI retained
+--// Cool draggable UI retained, now with distance toggle
 
 --==============================
 -- Services
@@ -17,6 +17,7 @@ local LocalPlayer = Players.LocalPlayer
 --==============================
 local ESP_ENABLED   = true
 local SHOW_HEALTH   = false
+local SHOW_DISTANCE = false
 local TEAM_MODE     = false
 local SHOW_NPCS     = false
 local MAX_DISTANCE  = 10000
@@ -71,9 +72,11 @@ gui.ResetOnSpawn = false
 gui.Enabled = false
 
 local frame = Instance.new("Frame", gui)
-frame.Size = UDim2.fromOffset(240, 380)
-frame.Position = UDim2.fromScale(0.5,0.5) - UDim2.fromOffset(120,190)
+frame.Size = UDim2.fromOffset(240, 420)
+frame.Position = UDim2.fromScale(0.5,0.5) - UDim2.fromOffset(120,210)
 frame.BackgroundColor3 = Color3.fromRGB(22,22,22)
+frame.BackgroundTransparency = 0.1
+frame.BorderSizePixel = 0
 frame.Active = true
 frame.Draggable = true
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
@@ -93,20 +96,26 @@ end
 
 local espBtn  = makeButton(15,"ESP: ON")
 local hpBtn   = makeButton(55,"Health: OFF")
-local teamBtn = makeButton(95,"Team Mode: OFF")
-local npcBtn  = makeButton(135,"NPCs: OFF")
-local pColBtn = makeButton(175,"Player Color: "..PLAYER_COLORS[1].name)
-local nColBtn = makeButton(215,"NPC Color: "..NPC_COLORS[1].name)
-local refBtn  = makeButton(255,"Refresh ESP")
+local distBtn = makeButton(95,"Distance: ON") -- New button for distance toggle
+local teamBtn = makeButton(135,"Team Mode: OFF")
+local npcBtn  = makeButton(175,"NPCs: OFF")
+local pColBtn = makeButton(215,"Player Color: "..PLAYER_COLORS[1].name)
+local nColBtn = makeButton(255,"NPC Color: "..NPC_COLORS[1].name)
+local refBtn  = makeButton(295,"Refresh ESP")
 
 --==============================
 -- Utility
 --==============================
-local function formatText(name,hum)
+-- Modified to accept and display distance conditionally
+local function formatText(name, hum, distance)
+    local text = name
     if SHOW_HEALTH and hum then
-        return name.." | "..math.floor(hum.Health)
+        text = text .. " | " .. math.floor(hum.Health)
     end
-    return name
+    if SHOW_DISTANCE and distance then -- Conditionally add distance
+        text = text .. " | " .. math.floor(distance) .. "m"
+    end
+    return text
 end
 
 local function getPlayerColor(player)
@@ -128,7 +137,8 @@ local function clearESP(model)
     ESP_CACHE[model] = nil
 end
 
-local function createESP(model,name,color)
+-- Modified to accept and pass distance to formatText
+local function createESP(model, name, color, distance)
     local hum = model:FindFirstChildOfClass("Humanoid")
     local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
     if not hum or not root then return end
@@ -151,21 +161,23 @@ local function createESP(model,name,color)
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 16
     lbl.TextColor3 = color
-    lbl.Text = formatText(name, hum)
+    lbl.Text = formatText(name, hum, distance) -- Use new formatText with distance
 
     local conn = hum.HealthChanged:Connect(function()
         if ESP_CACHE[model] then
-            lbl.Text = formatText(name, hum)
+            -- Distance is fixed for this entity, only health might change
+            lbl.Text = formatText(name, hum, distance)
         end
     end)
 
-    ESP_CACHE[model] = {hl=hl,tag=tag,lbl=lbl,hum=hum,conn=conn}
+    ESP_CACHE[model] = {hl=hl, tag=tag, lbl=lbl, hum=hum, conn=conn}
 end
 
-local function updateESP(model,name,color)
+-- Modified to accept and pass distance to formatText
+local function updateESP(model, name, color, distance) -- Added distance parameter
     local d = ESP_CACHE[model]
     if not d then return end
-    d.lbl.Text = formatText(name,d.hum)
+    d.lbl.Text = formatText(name, d.hum, distance) -- Use new formatText with distance
     d.lbl.TextColor3 = color
     d.hl.OutlineColor = color
 end
@@ -178,12 +190,12 @@ local function tryAddNPC(model)
         local hum = model:FindFirstChildOfClass("Humanoid")
         local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
         if hum and root then
-            npcCache[model] = {hum=hum,root=root,name=model.Name}
+            npcCache[model] = {hum=hum, root=root, name=model.Name}
         end
     end
 end
 
-for _,obj in ipairs(workspace:GetDescendants()) do
+for _, obj in ipairs(workspace:GetDescendants()) do
     tryAddNPC(obj)
 end
 workspace.DescendantAdded:Connect(tryAddNPC)
@@ -206,34 +218,41 @@ local function refreshESP()
     local pos = root.Position
     local seen = {}
 
-    for _,plr in ipairs(Players:GetPlayers()) do
+    -- Players
+    for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and plr.Character then
             local r = plr.Character:FindFirstChild("HumanoidRootPart")
-            if r and (pos-r.Position).Magnitude <= MAX_DISTANCE then
-                seen[plr.Character]=true
-                local c = getPlayerColor(plr)
-                if ESP_CACHE[plr.Character] then
-                    updateESP(plr.Character,plr.Name,c)
-                else
-                    createESP(plr.Character,plr.Name,c)
+            if r then
+                local distanceToPlayer = (pos - r.Position).Magnitude
+                if distanceToPlayer <= MAX_DISTANCE then -- Filter by MAX_DISTANCE
+                    seen[plr.Character] = true
+                    local c = getPlayerColor(plr)
+                    if ESP_CACHE[plr.Character] then
+                        updateESP(plr.Character, plr.Name, c, distanceToPlayer) -- Pass distance
+                    else
+                        createESP(plr.Character, plr.Name, c, distanceToPlayer) -- Pass distance
+                    end
                 end
             end
         end
     end
 
+    -- NPCs
     if SHOW_NPCS then
-        for m,d in pairs(npcCache) do
-            if (pos-d.root.Position).Magnitude <= MAX_DISTANCE then
-                seen[m]=true
-                if ESP_CACHE[m] then
-                    updateESP(m,d.name,NPC_COLOR)
+        for model, data in pairs(npcCache) do
+            local distanceToNPC = (pos - data.root.Position).Magnitude
+            if distanceToNPC <= MAX_DISTANCE then -- Filter by MAX_DISTANCE
+                seen[model] = true
+                if ESP_CACHE[model] then
+                    updateESP(model, data.name, NPC_COLOR, distanceToNPC) -- Pass distance
                 else
-                    createESP(m,d.name,NPC_COLOR)
+                    createESP(model, data.name, NPC_COLOR, distanceToNPC) -- Pass distance
                 end
             end
         end
     end
 
+    -- Cleanup entities outside of range or no longer relevant
     for m in pairs(ESP_CACHE) do
         if not seen[m] then clearESP(m) end
     end
@@ -252,6 +271,12 @@ hpBtn.MouseButton1Click:Connect(function()
     SHOW_HEALTH = not SHOW_HEALTH
     hpBtn.Text = SHOW_HEALTH and "Health: ON" or "Health: OFF"
     refreshESP()
+end)
+
+distBtn.MouseButton1Click:Connect(function() -- New button logic for distance toggle
+    SHOW_DISTANCE = not SHOW_DISTANCE
+    distBtn.Text = SHOW_DISTANCE and "Distance: ON" or "Distance: OFF"
+    refreshESP() -- Refresh to update text immediately
 end)
 
 teamBtn.MouseButton1Click:Connect(function()
