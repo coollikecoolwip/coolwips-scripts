@@ -20,7 +20,7 @@ local SHOW_HEALTH   = false
 local SHOW_DISTANCE = false
 local TEAM_MODE     = false
 local SHOW_NPCS     = false
-local MAX_DISTANCE  = 10000
+local MAX_DISTANCE  = 100000
 local UPDATE_RATE   = 0.5
 
 --==============================
