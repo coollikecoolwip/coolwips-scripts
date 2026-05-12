@@ -13,8 +13,8 @@ screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 --// Minimap Settings
 local INITIAL_SIZE = 200 -- Starting size of the minimap
-local MIN_SIZE = 120   -- Minimum size
-local MAX_SIZE = 420   -- Maximum size
+local MIN_SIZE = 80   -- Minimum size
+local MAX_SIZE = 500   -- Maximum size
 
 local mapSize = INITIAL_SIZE
 local zoom = 0.2
