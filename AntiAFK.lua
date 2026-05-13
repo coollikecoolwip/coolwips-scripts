@@ -1,10 +1,18 @@
---// Compact Anti-AFK + Random Walk (Universal LocalScript)
+--// Compact Anti-AFK + Random Walk + Ping (Universal LocalScript)
+--// Modes: Walk / Ping / Hybrid
+--// Prevents idle kick using VirtualUser (mouse, key, camera)
 
+--==============================
 -- SERVICES
+--==============================
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+local RunService = game:GetService("RunService")
 
+--==============================
 -- PLAYER
+--==============================
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
@@ -18,6 +26,19 @@ local radius = 20
 local walkTime = 2
 local running = false
 local uiVisible = true
+
+-- Modes: "Walk", "Ping", "Hybrid"
+local mode = "Hybrid"
+
+-- Random walk timing
+local randomWalkMode = true
+local minWalkTime = 1
+local maxWalkTime = 10
+
+-- Ping (anti-idle) system
+local pingInterval = 55
+local pingCooldown = pingInterval
+local totalPings = 0
 
 --==============================
 -- VISUALS
@@ -64,9 +85,14 @@ end
 
 task.spawn(function()
 	while true do
-		if running and humanoid.Health > 0 then
+		if running and humanoid.Health > 0 and mode ~= "Ping" then
 			humanoid:MoveTo(randomPoint())
-			humanoid.MoveToFinished:Wait(walkTime)
+
+			local waitTime = walkTime
+			if randomWalkMode then
+				waitTime = math.random(minWalkTime, maxWalkTime)
+			end
+			humanoid.MoveToFinished:Wait(waitTime)
 
 			if (root.Position - homePosition).Magnitude > radius then
 				humanoid:MoveTo(homePosition)
@@ -75,6 +101,47 @@ task.spawn(function()
 		end
 		task.wait(0.25)
 	end
+end)
+
+--==============================
+-- TRUE ANTI-AFK (IDLE EVENT)
+--==============================
+player.Idled:Connect(function()
+	VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+	task.wait(0.1)
+	VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+--==============================
+-- HEARTBEAT PING LOOP (Ping / Hybrid)
+--==============================
+RunService.Heartbeat:Connect(function(dt)
+	if mode == "Walk" then return end
+
+	pingCooldown -= dt
+	if pingCooldown > 0 then return end
+	pingCooldown = pingInterval
+
+	pcall(function()
+		-- Mouse click
+		VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+		task.wait(0.05)
+		VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+
+		-- Fake key press
+		VirtualUser:KeyDown(string.char(0))
+		task.wait(0.05)
+		VirtualUser:KeyUp(string.char(0))
+
+		-- Camera nudge
+		local cam = workspace.CurrentCamera
+		local cf = cam.CFrame
+		cam.CFrame = cf * CFrame.Angles(0, 0.0001, 0)
+		task.wait(0.03)
+		cam.CFrame = cf
+	end)
+
+	totalPings += 1
 end)
 
 --==============================
@@ -88,13 +155,12 @@ gui.Parent = player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.fromOffset(220, 170)
+frame.Size = UDim2.fromOffset(220, 200)
 frame.Position = UDim2.fromScale(0.05, 0.35)
 frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Draggable = true
-
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0,10)
 
 --==============================
@@ -109,41 +175,42 @@ local function label(text, y)
 	l.Text = text
 	l.Font = Enum.Font.GothamMedium
 	l.TextSize = 12
-	l.TextScaled = false
 	l.TextXAlignment = Enum.TextXAlignment.Left
 	l.TextYAlignment = Enum.TextYAlignment.Center
 	l.TextColor3 = Color3.fromRGB(220,220,220)
 	return l
 end
 
-local function numberBox(initialText, placeholderText, y)
+local function numberBox(initialText, labelText, y)
 	local container = Instance.new("Frame")
 	container.Parent = frame
 	container.Size = UDim2.new(1, -16, 0, 24)
 	container.Position = UDim2.fromOffset(8, y)
 	container.BackgroundTransparency = 1
-	container.LayoutOrder = 0 -- For potential future use if we add more complex layouts
 
-	local prefixLabel = label(placeholderText .. ": ", 0)
-	prefixLabel.Parent = container
-	prefixLabel.Size = UDim2.new(0, 80, 1, 0) -- Fixed size for the label
-	prefixLabel.TextXAlignment = Enum.TextXAlignment.Right
-	prefixLabel.TextColor3 = Color3.fromRGB(180,180,180) -- Slightly dimmer for prefix
+	local l = Instance.new("TextLabel")
+	l.Parent = container
+	l.Size = UDim2.new(0, 80, 1, 0)
+	l.BackgroundTransparency = 1
+	l.Text = labelText .. ":"
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 12
+	l.TextXAlignment = Enum.TextXAlignment.Right
+	l.TextColor3 = Color3.fromRGB(180,180,180)
 
 	local b = Instance.new("TextBox")
 	b.Parent = container
-	b.Size = UDim2.new(1, -88, 1, 0) -- Takes remaining space minus prefix width + padding
-	b.Position = UDim2.new(0, 88, 0, 0) -- Positioned next to the prefix label
+	b.Position = UDim2.fromOffset(88, 0)
+	b.Size = UDim2.new(1, -88, 1, 0)
 	b.Text = initialText
 	b.Font = Enum.Font.Gotham
 	b.TextSize = 12
-	b.TextScaled = false
 	b.BackgroundColor3 = Color3.fromRGB(30,30,30)
 	b.TextColor3 = Color3.new(1,1,1)
 	b.BorderSizePixel = 0
 	b.ClearTextOnFocus = false
 	Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
-	return b, container -- Return both the textbox and its container
+	return b
 end
 
 local function button(text, y)
@@ -154,7 +221,6 @@ local function button(text, y)
 	b.Text = text
 	b.Font = Enum.Font.GothamBold
 	b.TextSize = 12
-	b.TextScaled = false
 	b.BackgroundColor3 = Color3.fromRGB(45,45,45)
 	b.TextColor3 = Color3.new(1,1,1)
 	b.BorderSizePixel = 0
@@ -167,51 +233,42 @@ end
 --==============================
 label("Anti‑AFK Walker", 6)
 
-local radiusBox, radiusBoxContainer = numberBox("20", "Radius", 28)
-local timeBox, timeBoxContainer = numberBox("2", "Walk Time", 58)
+local radiusBox = numberBox("20", "Radius", 28)
+local timeBox = numberBox("2", "Walk Time", 58)
 
 local homeBtn = button("Set Home", 92)
 local startBtn = button("Start", 122)
+local modeBtn = button("Mode: Hybrid", 152)
 
 --==============================
 -- UI LOGIC
 --==============================
-local function sanitizeNumberInput(textbox, defaultValue)
+local function sanitize(textbox, fallback)
 	textbox.FocusLost:Connect(function()
-		local currentText = textbox.Text
-		local num = tonumber(currentText)
-
-		if num == nil or num <= 0 then
-			textbox.Text = defaultValue
-			num = defaultValue
+		local v = tonumber(textbox.Text)
+		if not v or v <= 0 then
+			textbox.Text = tostring(fallback)
 		else
-			textbox.Text = tostring(num) -- Ensure it's just the number
+			textbox.Text = tostring(v)
 		end
-		return num
 	end)
-	return defaultValue -- Return default value if initial logic fails
 end
 
--- Apply sanitization to input boxes
-local currentRadius = sanitizeNumberInput(radiusBox, radius)
-local currentWalkTime = sanitizeNumberInput(timeBox, walkTime)
+sanitize(radiusBox, radius)
+sanitize(timeBox, walkTime)
 
 radiusBox.FocusLost:Connect(function()
-	local val = tonumber(radiusBox.Text)
-	if val and val > 0 then
-		radius = val
+	local v = tonumber(radiusBox.Text)
+	if v and v > 0 then
+		radius = v
 		updateVisuals()
-	else
-		radiusBox.Text = tostring(radius) -- Reset to current valid radius
 	end
 end)
 
 timeBox.FocusLost:Connect(function()
-	local val = tonumber(timeBox.Text)
-	if val and val > 0 then
-		walkTime = val
-	else
-		timeBox.Text = tostring(walkTime) -- Reset to current valid walk time
+	local v = tonumber(timeBox.Text)
+	if v and v > 0 then
+		walkTime = v
 	end
 end)
 
@@ -225,20 +282,24 @@ startBtn.MouseButton1Click:Connect(function()
 	startBtn.Text = running and "Stop" or "Start"
 end)
 
+modeBtn.MouseButton1Click:Connect(function()
+	if mode == "Walk" then
+		mode = "Ping"
+	elseif mode == "Ping" then
+		mode = "Hybrid"
+	else
+		mode = "Walk"
+	end
+	modeBtn.Text = "Mode: " .. mode
+end)
+
 --==============================
 -- UI TOGGLE (L KEY)
 --==============================
 UserInputService.InputBegan:Connect(function(input, gp)
-	if gp then return end -- Ignore gamepad input
+	if gp then return end
 	if input.KeyCode == Enum.KeyCode.L then
 		uiVisible = not uiVisible
 		gui.Enabled = uiVisible
 	end
-end)
-
---==============================
--- ANTI AFK
---==============================
-player.Idled:Connect(function()
-	humanoid:Move(Vector3.zero)
 end)
