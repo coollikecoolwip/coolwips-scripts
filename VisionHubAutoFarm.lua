@@ -30,7 +30,6 @@ local v521 = function(arg17_1, arg17_2)
         rawset(v180, up2, v184)
         return v184
     else
-        warn(("Invalid Service: " .. (tostring(up2))))
         v183 = nil
         return v183
     end
@@ -99,59 +98,7 @@ capturedValues1.value10 = false
 capturedValues1.value11 = {}
 capturedValues1.value12 = false
 capturedValues1.value13 = {["EnableAutoFarm"] = false, ["AutoFarmSpeed"] = 28, ["AutoFarmOffset"] = 1, ["AutoFarmDelay"] = .1, ["AutoResetOnFull"] = false, ["AutoEndRound"] = false, ["AntiAfk"] = false, ["AntiFling"] = false, ["AutoFarmMode"] = "Nearest"}
-capturedValues1.value13.DiagnosticMode = false
-capturedValues1.value30 = {lastMessage = "", lastReport = 0}
-capturedValues1.value31 = {lastSelectedAt = nil, lastTarget = nil}
-capturedValues1.value13.TimingLogs = true
-local timingLogState = {last = {}, entries = {}, lastPickupAt = nil}
-local function farmTiming(key, message, interval)
-    if not capturedValues1.value13.TimingLogs then return end
-    local now = os.clock()
-    if interval and timingLogState.last[key] and now - timingLogState.last[key] < interval then return end
-    timingLogState.last[key] = now
-    local entry = string.format("[VISION TIMING %.3f] %s", now, message)
-    table.insert(timingLogState.entries, entry)
-    if #timingLogState.entries > 150 then table.remove(timingLogState.entries, 1) end
-    print(entry)
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.1)
-        if capturedValues1.value13.DiagnosticMode then
-            local workspaceRoot = capturedValues1.value2
-            local candidates, coinParts, root = 0, 0, nil
-            local sample = {}
-            for _, item in ipairs(workspaceRoot:GetDescendants()) do
-                if item.Name == "CoinContainer" or item.Name == "CandyContainer"
-                    or item.Name == "CounContainer" or item.Name:lower() == "barn" then
-                    root = root or item
-                end
-                if item:IsA("BasePart") and item.Name:lower() == "coin_server" then
-                    coinParts += 1
-                    candidates += 1
-                    if #sample < 5 then table.insert(sample, item:GetFullName()) end
-                elseif item:IsA("BasePart") then
-                    local name = item.Name:lower()
-                    if name:find("candy") or name:find("coin") then
-                        candidates += 1
-                    end
-                end
-            end
-            local character = capturedValues1.value8.Character
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-            local roundOk, activeRound = pcall(capturedValues1.value23)
-            local report = string.format("Workspace scan: %d candidate(s), %d Coin_Server part(s), root=%s; roundActive=%s; farm=%s; alive=%s; sample=%s",
-                candidates, coinParts, root and root:GetFullName() or "missing",
-                tostring(roundOk and activeRound), tostring(capturedValues1.value13.EnableAutoFarm),
-                tostring(humanoid and humanoid.Health > 0), #sample > 0 and table.concat(sample, " | ") or "none")
-            if report ~= capturedValues1.value30.lastMessage then
-                print("[VISION HUB] " .. report)
-                capturedValues1.value30.lastMessage = report
-            end
-        end
-    end
-end)
+local farmLifecycle = {generation = 0, betweenRounds = false}
 capturedValues1.value14 = {["RoundStart"] = false, ["VictoryScreen"] = false}
 capturedValues1.value15 = {["RegularLobby"] = true, ["ServerStatus"] = true, ["EffectLoader"] = true, ["RoundTimerPart"] = true, ["WeaponDisplays"] = true, ["Camera"] = true, ["Terrain"] = true, ["PetContainer"] = true, ["GameSettings"] = true, ["LoadLobby"] = true, ["ServerVersion"] = true}
 local v573 = capturedValues1.value4:WaitForChild("Remotes", 5)
@@ -591,6 +538,7 @@ local v588 = function(arg46_1)
 end
 capturedValues1.value22 = v583
 local v584 = function()
+    if farmLifecycle.betweenRounds then return false end
     local v467, v468, v469, v470, v471, v473, v475
     -- Trust the active collectible hierarchy before checking version-specific timer UI.
     for _, collectible in ipairs(capturedValues1.value2:GetDescendants()) do
@@ -649,21 +597,33 @@ capturedValues1.value25 = v586
 capturedValues1.value26 = v587
 capturedValues1.value27 = v588
 capturedValues1.value28 = v589
+local function beginFarmRound()
+    local newRound = farmLifecycle.betweenRounds or not capturedValues1.value14.RoundStart
+    farmLifecycle.betweenRounds = false
+    capturedValues1.value14.RoundStart = true
+    capturedValues1.value14.VictoryScreen = false
+    if not newRound then return end
+    farmLifecycle.generation += 1
+    capturedValues1.value26()
+    capturedValues1.value13.EnableAutoFarm = true
+    -- Keep the visible switch synchronized, even when it was off last round.
+    local toggle = spilledValues1.value3 and spilledValues1.value3.EnableAutoFarm
+    if toggle and toggle.Value ~= true then
+        pcall(function() toggle:SetValue(true) end)
+    end
+    capturedValues1.value13.EnableAutoFarm = true
+end
 if v573 then
     v589 = v573.OnClientEvent
     spilledValues1.value1 = function()
-        capturedValues1.value14.RoundStart = true
-        capturedValues1.value14.VictoryScreen = false
-        capturedValues1.value26()
+        beginFarmRound()
         return
     end
     v589:Connect(spilledValues1.value1)
 end
 if v574 then
     spilledValues1.value1 = function()
-        capturedValues1.value14.RoundStart = true
-        capturedValues1.value14.VictoryScreen = false
-        capturedValues1.value26()
+        beginFarmRound()
         return
     end
     v574.OnClientEvent:Connect(spilledValues1.value1)
@@ -671,6 +631,8 @@ end
 if v575 then
     v589 = v575.OnClientEvent
     spilledValues1.value1 = function()
+        farmLifecycle.generation += 1
+        farmLifecycle.betweenRounds = true
         capturedValues1.value14.RoundStart = false
         capturedValues1.value14.VictoryScreen = true
         capturedValues1.value26()
@@ -681,6 +643,8 @@ if v575 then
 end
 if v576 then
     spilledValues1.value1 = function()
+        farmLifecycle.generation += 1
+        farmLifecycle.betweenRounds = true
         capturedValues1.value14.RoundStart = false
         capturedValues1.value14.VictoryScreen = false
         capturedValues1.value26()
@@ -691,6 +655,7 @@ if v576 then
 end
 v589 = capturedValues1.value8.CharacterAdded
 spilledValues1.value1 = function()
+    farmLifecycle.generation += 1
     capturedValues1.value26()
     capturedValues1.value28()
     return
@@ -775,6 +740,7 @@ end
 capturedValues1.value29 = v590
 if v563 and v563:IsA("RemoteEvent") then
     v563.OnClientEvent:Connect(function(arg21_1)
+        beginFarmRound()
         local v216, v220, v224, v225
         local v213 = false
         capturedValues1.value11 = {}
@@ -841,6 +807,8 @@ spilledValues1.value2 = function()
     local cachedCollectibleContainers = {}
     local candidates = {}
     local touchSeen = setmetatable({}, {__mode = "k"})
+    local targetCooldown = setmetatable({}, {__mode = "k"})
+    local observedGeneration = farmLifecycle.generation
     local nextContainerRefresh = 0
     local activeTarget, queuedTarget
     local queuedPolicy, queuedMode
@@ -879,6 +847,7 @@ spilledValues1.value2 = function()
     end
     local function available(part)
         return part and isPickupPart(part)
+            and (not targetCooldown[part] or os.clock() >= targetCooldown[part])
             and part:IsDescendantOf(capturedValues1.value2)
             and (not touchSeen[part] or part:FindFirstChild("TouchInterest") ~= nil)
     end
@@ -912,8 +881,7 @@ spilledValues1.value2 = function()
     task.spawn(function()
         while true do
             if capturedValues1.value13.EnableAutoFarm then
-                local scanStartedAt = os.clock()
-                local ok, err = pcall(function()
+                pcall(function()
                     if os.clock() >= nextContainerRefresh then
                         cachedCollectibleContainers = {}
                         for _, item in ipairs(capturedValues1.value2:GetDescendants()) do
@@ -927,7 +895,6 @@ spilledValues1.value2 = function()
                         nextContainerRefresh = os.clock() + 1
                     end
                     local fresh, seen = {}, {}
-                    local ignoredVisuals = 0
                     for _, container in ipairs(cachedCollectibleContainers) do
                         if container.Parent then
                             for _, part in ipairs(container:GetDescendants()) do
@@ -936,23 +903,16 @@ spilledValues1.value2 = function()
                                     if isPickupPart(part) then
                                         if part:FindFirstChild("TouchInterest") then touchSeen[part] = true end
                                         if available(part) then table.insert(fresh, part) end
-                                    elseif part.Name:lower():find("visual", 1, true) then
-                                        ignoredVisuals += 1
                                     end
                                 end
                             end
                         end
                     end
                     candidates = fresh
-                    farmTiming("scan", string.format("SCAN containers=%d pickup_parts=%d ignored_visuals=%d duration=%.1fms",
-                        #cachedCollectibleContainers, #fresh, ignoredVisuals, (os.clock() - scanStartedAt) * 1000), 2)
                     if activeTarget and activeTarget.Parent then
                         queueNext()
                     end
                 end)
-                if not ok then
-                    farmTiming("scan_error", "SCAN ERROR " .. tostring(err), 2)
-                end
             else
                 queuedTarget = nil
                 nextContainerRefresh = 0
@@ -961,6 +921,16 @@ spilledValues1.value2 = function()
         end
     end)
     while true do
+        if observedGeneration ~= farmLifecycle.generation then
+            observedGeneration = farmLifecycle.generation
+            activeTarget, queuedTarget, queuedPolicy, queuedMode = nil, nil, nil, nil
+            candidates, cachedCollectibleContainers = {}, {}
+            touchSeen = setmetatable({}, {__mode = "k"})
+            targetCooldown = setmetatable({}, {__mode = "k"})
+            nextContainerRefresh = 0
+            hybridCount, hybridInterval = 0, math.random(8, 12)
+            activeHybridRandom, continueImmediately = false, false
+        end
         if continueImmediately then
             continueImmediately = false
         else
@@ -969,6 +939,7 @@ spilledValues1.value2 = function()
         v271 = function()
             local v237, v239, v240, v241, v242, v243, v244, v245, v246, v247, v248, v249, v250, v251, v252
             local v254, v257, v259
+            local passGeneration = farmLifecycle.generation
             local v233 = capturedValues1.value8.Character
             local v230 = v233 and (v233:FindFirstChildOfClass("Humanoid"))
             local v229 = v233 and (v233:FindFirstChild("HumanoidRootPart"))
@@ -1013,34 +984,19 @@ spilledValues1.value2 = function()
                 v229 = v238
             end
             if v229 then
-                if capturedValues1.value13.EnableAutoFarm then
-                    local reason = not v233 and "character missing"
-                        or not v230 and "humanoid missing"
-                        or v230.Health <= 0 and "character dead"
-                        or not up3 and "root part missing"
-                        or not v235 and "round/map not ready"
-                        or not v236 and "Alive attribute false"
-                        or capturedValues1.value10 and "bag full" or "state gate"
-                    farmTiming("idle", "WAIT reason=" .. reason, 2)
-                end
                 capturedValues1.value28()
                 if v230 then
                     v230.PlatformStand = false
                 end
             else
-                if v232 or capturedValues1.value13.DiagnosticMode or capturedValues1.value13.EnableAutoFarm then
+                if v232 or capturedValues1.value13.EnableAutoFarm then
                     v238 = candidates
                     if ((#v238) > 0) and roundActive and capturedValues1.value13.EnableAutoFarm then
-                        local selectionStartedAt = os.clock()
                         local policy = selectionPolicy(false)
                         local mode = capturedValues1.value13.AutoFarmMode
                         local usedQueue = available(queuedTarget) and queuedPolicy == policy and queuedMode == mode or false
                         local up4 = usedQueue and queuedTarget or selectNext(up3.Position, nil, policy)
                         activeHybridRandom = mode == "Hybrid" and policy == "Random"
-                        if mode == "Hybrid" then
-                            farmTiming("hybrid", string.format("HYBRID choice=%s nearest_pickups=%d random_after=%d", policy, hybridCount, hybridInterval))
-                        end
-                        if not up4 then farmTiming("stale", "WAIT cached candidates have no available candy; waiting for refresh", 2) end
                         queuedTarget = nil
                         activeTarget = up4
                         if up4 then queueNext() end
@@ -1050,26 +1006,6 @@ spilledValues1.value2 = function()
                             v244 = up4.Parent
                         end
                         if v244 then
-                            local selectedAt = os.clock()
-                            farmTiming("select", string.format("SELECT target=%s source=%s search=%.1fms handoff=%s distance=%.2f",
-                                up4:GetFullName(), usedQueue and "queued" or "cache",
-                                (selectedAt - selectionStartedAt) * 1000,
-                                timingLogState.lastPickupAt and string.format("%.1fms", (selectedAt - timingLogState.lastPickupAt) * 1000) or "first target",
-                                (up3.Position - up4.Position).Magnitude))
-                            timingLogState.lastPickupAt = nil
-                            if capturedValues1.value13.DiagnosticMode then
-                                local gapMs = capturedValues1.value31.lastSelectedAt
-                                    and (selectedAt - capturedValues1.value31.lastSelectedAt) * 1000 or 0
-                                print(string.format("[VISION HUB TIMING] selected=%s gap_since_previous_selection=%.1fms candidates=%d",
-                                    up4:GetFullName(), gapMs, #v238))
-                            end
-                            capturedValues1.value31.lastSelectedAt = selectedAt
-                            capturedValues1.value31.lastTarget = up4:GetFullName()
-                            if capturedValues1.value13.DiagnosticMode then
-                                print(string.format("[VISION HUB] Targeting %s at %.1f studs; TouchInterest=%s",
-                                    up4:GetFullName(), (up3.Position - up4.Position).Magnitude,
-                                    tostring(up4:FindFirstChild("TouchInterest") ~= nil)))
-                            end
                             v249 = up3
                             v241, v242, v243 = capturedValues1.value27(v249)
                             v244 = v241 and (v242 and v243)
@@ -1085,8 +1021,6 @@ spilledValues1.value2 = function()
                                     return up4:IsDescendantOf(capturedValues1.value2)
                                         and (not hadTouchMarker or up4:FindFirstChild("TouchInterest") ~= nil)
                                 end
-                                local tweenStartedAt = os.clock()
-                                farmTiming("move_start", string.format("MOVE START distance=%.2f speed=%.1f planned=%.1fms", v249, v245, v246 * 1000))
                                 v248 = capturedValues1.value6
                                 v251 = TweenInfo.new(v246, Enum.EasingStyle.Linear)
                                 v247 = v248:Create(v242, v251, {["Position"] = v244})
@@ -1104,7 +1038,8 @@ spilledValues1.value2 = function()
                                         v200 = v208
                                         v201 = v200
                                     end
-                                    if v201 or not capturedValues1.value13.EnableAutoFarm
+                                    if v201 or passGeneration ~= farmLifecycle.generation
+                                        or not capturedValues1.value13.EnableAutoFarm
                                         or capturedValues1.value8.Character ~= v233
                                         or v230.Health <= 0 or not capturedValues1.value23() then
                                         up5:Cancel()
@@ -1117,16 +1052,10 @@ spilledValues1.value2 = function()
                                 end))
                                 up5:Play()
                                 local completedState = up5.Completed:Wait()
-                                local remainingDistance = up3.Parent and (up3.Position - v244).Magnitude or -1
-                                farmTiming("move_end", string.format("MOVE END state=%s elapsed=%.1fms remaining_to_goal=%.2f pickup_marker=%s",
-                                    tostring(completedState), (os.clock() - tweenStartedAt) * 1000,
-                                    remainingDistance, tostring(targetRemains())))
-                                if capturedValues1.value13.DiagnosticMode then
-                                    print(string.format("[VISION HUB TIMING] target=%s tween_result=%s tween_elapsed=%.1fms",
-                                        capturedValues1.value31.lastTarget or "unknown", tostring(completedState),
-                                        (os.clock() - tweenStartedAt) * 1000))
-                                end
-                                if completedState == Enum.PlaybackState.Cancelled and targetRemains() then
+                                if passGeneration ~= farmLifecycle.generation
+                                    or not capturedValues1.value13.EnableAutoFarm
+                                    or capturedValues1.value8.Character ~= v233
+                                    or (completedState == Enum.PlaybackState.Cancelled and targetRemains()) then
                                     up5:Destroy()
                                     if up6 then up6:Disconnect() end
                                     if up7 then up7:Disconnect() end
@@ -1140,34 +1069,27 @@ spilledValues1.value2 = function()
                                 end
                                 -- Keep this target until its replicated pickup marker disappears.
                                 -- On timeout, stop farming instead of silently skipping it.
-                                local pickupStartedAt = os.clock()
-                                local pickupDeadline = pickupStartedAt + 5
-                                local nextPickupReport = pickupStartedAt + 0.5
+                                local pickupDeadline = os.clock() + 5
                                 while targetRemains() and os.clock() < pickupDeadline do
-                                    if not capturedValues1.value13.EnableAutoFarm
+                                    if passGeneration ~= farmLifecycle.generation
+                                        or not capturedValues1.value13.EnableAutoFarm
                                         or capturedValues1.value8.Character ~= v233
                                         or not up3.Parent or v230.Health <= 0
                                         or not capturedValues1.value23() or capturedValues1.value10 then
                                         capturedValues1.value28()
                                         return
                                     end
-                                    if os.clock() >= nextPickupReport then
-                                        farmTiming("pickup_wait", string.format("PICKUP WAIT elapsed=%.1fms distance=%.2f marker_at_start=%s next_queued=%s",
-                                            (os.clock() - pickupStartedAt) * 1000,
-                                            (up3.Position - up4.Position).Magnitude,
-                                            tostring(hadTouchMarker), tostring(available(queuedTarget) and true or false)))
-                                        nextPickupReport = os.clock() + 1
-                                    end
                                     capturedValues1.value5.Heartbeat:Wait()
                                 end
                                 if targetRemains() then
-                                    farmTiming("pickup_timeout", "PICKUP TIMEOUT after 5s; stopping because collection was not confirmed")
-                                    capturedValues1.value13.EnableAutoFarm = false
+                                    targetCooldown[up4] = os.clock() + 10
+                                    activeTarget, queuedTarget = nil, nil
+                                    activeHybridRandom = false
                                     capturedValues1.value28()
-                                    if spilledValues1.value3 and spilledValues1.value3.EnableAutoFarm then
-                                        spilledValues1.value3.EnableAutoFarm:SetValue(false)
-                                    end
-                                    warn("[VISION HUB] Pickup was not confirmed within 5 seconds; farming stopped at this target.")
+                                    return
+                                end
+                                if passGeneration ~= farmLifecycle.generation then
+                                    capturedValues1.value28()
                                     return
                                 end
                                 if mode == "Hybrid" and capturedValues1.value13.AutoFarmMode == mode then
@@ -1178,10 +1100,6 @@ spilledValues1.value2 = function()
                                     end
                                 end
                                 activeHybridRandom = false
-                                timingLogState.lastPickupAt = os.clock()
-                                farmTiming("pickup_done", string.format("PICKUP TARGET CLEARED confirmation_wait=%.1fms total_target=%.1fms next_queued=%s",
-                                    (os.clock() - pickupStartedAt) * 1000, (os.clock() - selectedAt) * 1000,
-                                    tostring(available(queuedTarget) and true or false)))
                                 activeTarget = nil
                                 -- The next candidate was selected during travel; skip the idle delay.
                                 continueImmediately = true
@@ -1189,8 +1107,6 @@ spilledValues1.value2 = function()
                             end
                         end
                     else
-                        farmTiming("no_candidates", string.format("WAIT reason=%s candidates=%d",
-                            not roundActive and "round inactive" or "no candy found", #v238), 2)
                         capturedValues1.value28()
                         if v230 then
                             v230.PlatformStand = false
@@ -1204,10 +1120,6 @@ spilledValues1.value2 = function()
         v275 = {v270(v271)}
         v276 = v275[2]
         if (not v275[1]) then
-            farmTiming("loop_error", "LOOP ERROR " .. tostring(v276), 2)
-            if capturedValues1.value13.DiagnosticMode then
-                warn("[VISION HUB TIMING] farm_loop_error=" .. tostring(v276))
-            end
             capturedValues1.value28()
         end
     end
@@ -1249,13 +1161,11 @@ end
 
 local v590, libraryError = loadRemoteModule("https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/Library.lua")
 if type(v590) ~= "table" then
-    warn("VISION HUB: UI library unavailable: " .. tostring(libraryError))
     return
 else
     local saveManager, saveError = loadRemoteModule("https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/addons/SaveManager.lua")
     local themeManager, themeError = loadRemoteModule("https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/addons/ThemeManager.lua")
     if type(saveManager) ~= "table" or type(themeManager) ~= "table" then
-        warn("VISION HUB: save/theme add-on unavailable: " .. tostring(saveError or themeError))
         return
     end
     spilledValues1.value1 = saveManager
@@ -1327,23 +1237,6 @@ else
             return
         end
         spilledValues1.value8:OnChanged(spilledValues1.value12)
-        spilledValues1.value10:AddToggle("TimingLogs", {Text = "Candy Timing Logs", Default = true})
-        spilledValues1.value3.TimingLogs:OnChanged(function(enabled)
-            capturedValues1.value13.TimingLogs = enabled
-            if enabled then farmTiming("enabled", "Timing logs enabled: SCAN, SELECT, MOVE, PICKUP and WAIT show where time is spent") end
-        end)
-        spilledValues1.value10:AddButton("Print Recent Timing Logs", function()
-            print("[VISION TIMING] Recent log entries:")
-            for _, entry in ipairs(timingLogState.entries) do print(entry) end
-        end)
-        spilledValues1.value10:AddToggle("DiagnosticMode", {Text = "Candy Diagnostics", Default = false})
-        spilledValues1.value3.DiagnosticMode:OnChanged(function(enabled)
-            capturedValues1.value13.DiagnosticMode = enabled
-            capturedValues1.value30.lastMessage = ""
-            if enabled then
-                print("[VISION HUB] Candy diagnostics enabled. Check the executor/Roblox console for status.")
-            end
-        end)
         spilledValues1.value15 = capturedValues1.value13.AutoResetOnFull
         spilledValues1.value10:AddToggle("AutoResetOnFull", {["Text"] = "Auto Reset on Full Bag", ["Default"] = spilledValues1.value15})
         spilledValues1.value3.AutoResetOnFull:OnChanged(function(arg11_1)
