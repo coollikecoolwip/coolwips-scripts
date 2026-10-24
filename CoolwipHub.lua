@@ -40110,358 +40110,274 @@ if ok and result then
 	end
 
 	if playerDataChanged then
-		playerDataChanged.OnClientEvent:Connect(function(playerData)
+		fn3(playerDataChanged.OnClientEvent:Connect(function(playerData)
 			if typeof(playerData) == "table" then
 				tbl.PlayerData = playerData
 			end
-		end)
+		end))
 	end
 
-	local tbl3 = {}
-
-	getgenv().ClearESP = function()
-		for _, v4 in pairs(tbl3) do
-			for _, v5 in pairs(v4) do
-				if typeof(v5) == "table" then
-					for _, v6 in ipairs(v5) do
-						v6:Remove()
+	-- Lightweight ESP: cached discovery, lazy visuals, bounded update rates.
+	do
+		local records = {}
+		local gunRecord = nil
+		local roles = {"Murderer", "Sheriff", "Innocent"}
+		local features = {"Highlight", "Info", "Box", "Tracers", "Skeleton"}
+		local r15 = {
+			{"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+			{"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"}, {"LeftLowerLeg", "LeftFoot"},
+			{"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"}, {"RightLowerLeg", "RightFoot"},
+			{"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"}, {"LeftLowerArm", "LeftHand"},
+			{"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"}, {"RightLowerArm", "RightHand"},
+		}
+		local r6 = {{"Head", "Torso"}, {"Torso", "Left Arm"}, {"Torso", "Right Arm"}, {"Torso", "Left Leg"}, {"Torso", "Right Leg"}}
+		local roleOptions = {}
+		local clock, nextDiscovery, nextGun, nextText, nextBones = 0, 0, 0, 0, 0
+		local elapsed, interval = 0, 0.1
+		local drawingAvailable = Drawing and type(Drawing.new) == "function"
+		local function set(object, key, value)
+			if object[key] ~= value then object[key] = value end
+		end
+		local function removeDrawing(record, key)
+			if record[key] then record[key]:Remove(); record[key] = nil end
+		end
+		local function removeBones(record)
+			if record.bones then
+				for _, bone in ipairs(record.bones) do if bone.line then bone.line:Remove() end end
+				record.bones = nil
+				record.points = nil
+			end
+		end
+		local function destroy(record)
+			removeDrawing(record, "box")
+			removeDrawing(record, "tracer")
+			removeBones(record)
+			if record.highlight then record.highlight:Destroy() end
+			if record.info then record.info:Destroy() end
+		end
+		local function hide(record)
+			if record.box then set(record.box, "Visible", false) end
+			if record.tracer then set(record.tracer, "Visible", false) end
+			if record.highlight then set(record.highlight, "Enabled", false) end
+			if record.info then set(record.info, "Enabled", false) end
+			if record.bones then
+				for _, bone in ipairs(record.bones) do if bone.line then set(bone.line, "Visible", false) end end
+			end
+		end
+		getgenv().ClearESP = function()
+			for _, record in pairs(records) do destroy(record) end
+			table.clear(records)
+			if gunRecord then destroy(gunRecord); gunRecord = nil end
+			nextDiscovery, nextGun = 0, 0
+		end
+		local function drawing(kind)
+			local object = Drawing.new(kind)
+			object.Visible = false
+			object.Thickness = 1
+			object.Transparency = 1
+			object.ZIndex = 2
+			if kind == "Square" then object.Filled = false end
+			return object
+		end
+		local function highlight(record, parent, color, isGun)
+			if not record.highlight then
+				local h = Instance.new("Highlight")
+				h.Name = isGun and "CoolwipGunHighlight" or "CoolwipHighlight"
+				h.FillTransparency = isGun and 0.4 or 0.85
+				h.OutlineTransparency = 0
+				h.Adornee = parent
+				h.Parent = parent
+				record.highlight = h
+			end
+			set(record.highlight, "FillColor", color)
+			set(record.highlight, "OutlineColor", color)
+			set(record.highlight, "Enabled", true)
+		end
+		local function info(record, parent, adorn, color, isGun)
+			if not record.info then
+				local gui = Instance.new("BillboardGui")
+				gui.Name = isGun and "CoolwipGunInfo" or "CoolwipInfoESP"
+				gui.Size = UDim2.fromOffset(isGun and 100 or 200, 50)
+				gui.StudsOffset = Vector3.new(0, isGun and 2 or 3.5, 0)
+				gui.AlwaysOnTop = true
+				local text = Instance.new("TextLabel")
+				text.Name = "InfoLabel"
+				text.BackgroundTransparency = 1
+				text.Size = UDim2.fromScale(1, 1)
+				text.TextStrokeTransparency = 0
+				text.Font = Enum.Font.SourceSansBold
+				text.TextSize = isGun and 18 or 16
+				text.RichText = false
+				text.Parent = gui
+				gui.Parent = parent
+				record.info, record.label, record.distance = gui, text, nil
+			end
+			set(record.info, "Adornee", adorn)
+			set(record.info, "Enabled", true)
+			set(record.label, "TextColor3", color)
+		end
+		local function options()
+			local active, needsDraw = false, false
+			for _, role in ipairs(roles) do
+				local o = roleOptions[role]
+				if not o then o = {}; roleOptions[role] = o end
+				o.active = false
+				for _, feature in ipairs(features) do
+					o[feature] = tbl.Config[feature .. role] == true
+					o.active = o.active or o[feature]
+				end
+				o.color = tbl.Config["ESPColor" .. role]
+				active = active or o.active
+				needsDraw = needsDraw or o.Box or o.Tracers or o.Skeleton
+			end
+			return active, needsDraw and drawingAvailable
+		end
+		local function refresh()
+			-- Role/part lookups happen four times a second, not every frame.
+			local murderer, sheriff = tbl.FindMurderer(), tbl.FindSheriff()
+			for _, record in pairs(records) do record.keep = false end
+			for _, player in ipairs(players:GetPlayers()) do
+				if player == localPlayer then continue end
+				local role = player == murderer and "Murderer" or player == sheriff and "Sheriff" or tbl.FindInnocent(player) and "Innocent"
+				local o = role and roleOptions[role]
+				local character = player.Character
+				local record = records[player]
+				if record and record.character ~= character then destroy(record); records[player] = nil; record = nil end
+				if not (o and o.active and character) then continue end
+				local root = character:FindFirstChild("HumanoidRootPart")
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				if not (root and humanoid and humanoid.Health > 0) then continue end
+				if not record then record = {character = character}; records[player] = record end
+				record.keep, record.role, record.root, record.humanoid = true, role, root, humanoid
+				record.head = character:FindFirstChild("Head")
+				if not o.Box then removeDrawing(record, "box") end
+				if not o.Tracers then removeDrawing(record, "tracer") end
+				if not o.Skeleton then removeBones(record) end
+				if not o.Highlight and record.highlight then record.highlight:Destroy(); record.highlight = nil end
+				if not o.Info and record.info then record.info:Destroy(); record.info, record.label = nil, nil end
+				if o.Skeleton and drawingAvailable then
+					if not record.bones then
+						record.bones, record.points = {}, {}
+						for _, names in ipairs(humanoid.RigType == Enum.HumanoidRigType.R15 and r15 or r6) do
+							record.bones[#record.bones + 1] = {names = names}
+						end
 					end
-				elseif v5 and v5.Remove then
-					v5:Remove()
+					for _, bone in ipairs(record.bones) do
+						bone.a = character:FindFirstChild(bone.names[1])
+						bone.b = character:FindFirstChild(bone.names[2])
+					end
 				end
 			end
-		end
-
-		table.clear(tbl3)
-
-		for _, player in ipairs(players:GetPlayers()) do
-			if player.Character then
-				local coolwipHighlight = player.Character:FindFirstChild("CoolwipHighlight")
-
-				if coolwipHighlight then
-					coolwipHighlight:Destroy()
-				end
-
-				local coolwipInfoESP = player.Character:FindFirstChild("CoolwipInfoESP")
-
-				if coolwipInfoESP then
-					coolwipInfoESP:Destroy()
-				end
+			for player, record in pairs(records) do
+				if not record.keep then destroy(record); records[player] = nil end
 			end
 		end
-
-		local v4 = fn8()
-
-		if v4 then
-			local gunDrop = v4:FindFirstChild("GunDrop")
-
-			if gunDrop then
-				local coolwipGunHighlight = gunDrop:FindFirstChild("CoolwipGunHighlight")
-
-				if coolwipGunHighlight then
-					coolwipGunHighlight:Destroy()
-				end
-
-				local coolwipGunInfo = gunDrop:FindFirstChild("CoolwipGunInfo")
-
-				if coolwipGunInfo then
-					coolwipGunInfo:Destroy()
+		fn3(players.PlayerRemoving:Connect(function(player)
+			if records[player] then destroy(records[player]); records[player] = nil end
+		end))
+		fn3(runService.Heartbeat:Connect(function(dt)
+			clock += dt
+			elapsed += dt
+			if elapsed < interval then return end
+			elapsed = 0 -- Never catch up with multiple ESP passes after a slow frame.
+			local playerActive, needsDraw = options()
+			local gunActive = tbl.Config.ESPGunDropped == true
+			interval = needsDraw and (1 / 30) or 0.1
+			if not playerActive and not gunActive then
+				if next(records) or gunRecord then getgenv().ClearESP() end
+				return
+			end
+			local camera = workspace_.CurrentCamera
+			if not camera then
+				for _, record in pairs(records) do hide(record) end
+				if gunRecord then hide(gunRecord) end
+				return
+			end
+			if clock >= nextDiscovery then
+				nextDiscovery = clock + 0.25
+				if playerActive then refresh() else
+					for player, record in pairs(records) do destroy(record); records[player] = nil end
 				end
 			end
-		end
+			local updateText, updateBones = clock >= nextText, clock >= nextBones
+			if updateText then nextText = clock + 0.2 end
+			if updateBones then nextBones = clock + (1 / 15) end
+			local cameraPosition = camera.CFrame.Position
+			local origin = needsDraw and Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y)
+			for player, record in pairs(records) do
+				local o = roleOptions[record.role]
+				local root = record.root
+				if not (o.active and player.Character == record.character and root.Parent and record.humanoid.Health > 0) then hide(record); continue end
+				local screen, onScreen = camera:WorldToViewportPoint(root.Position)
+				if not onScreen or screen.Z <= 0.1 then hide(record); continue end
+				if o.Highlight then highlight(record, record.character, o.color, false)
+				elseif record.highlight then set(record.highlight, "Enabled", false) end
+				if o.Info then
+					info(record, record.character, record.head or root, o.color, false)
+					if updateText or not record.distance then
+						local distance = math.floor((cameraPosition - root.Position).Magnitude)
+						if record.distance ~= distance then record.distance = distance; record.label.Text = player.Name .. "\n[" .. distance .. "]" end
+					end
+				elseif record.info then set(record.info, "Enabled", false) end
+				local height = 2500 / screen.Z
+				if o.Box and drawingAvailable then
+					if not record.box then record.box = drawing("Square") end
+					set(record.box, "Size", Vector2.new(height / 2, height))
+					set(record.box, "Position", Vector2.new(screen.X - height / 4, screen.Y - height / 2))
+					set(record.box, "Color", o.color); set(record.box, "Visible", true)
+				elseif record.box then set(record.box, "Visible", false) end
+				if o.Tracers and drawingAvailable then
+					if not record.tracer then record.tracer = drawing("Line") end
+					set(record.tracer, "From", origin)
+					set(record.tracer, "To", Vector2.new(screen.X, screen.Y + height / 2))
+					set(record.tracer, "Color", o.color); set(record.tracer, "Visible", true)
+				elseif record.tracer then set(record.tracer, "Visible", false) end
+				if o.Skeleton and updateBones and record.bones then
+					table.clear(record.points)
+					for _, bone in ipairs(record.bones) do
+						local a, b = bone.a, bone.b
+						if a and a.Parent and b and b.Parent then
+							local pa, pb = record.points[a], record.points[b]
+							if not pa then pa = camera:WorldToViewportPoint(a.Position); record.points[a] = pa end
+							if not pb then pb = camera:WorldToViewportPoint(b.Position); record.points[b] = pb end
+							if pa.Z > 0.1 and pb.Z > 0.1 then
+								if not bone.line then bone.line = drawing("Line") end
+								set(bone.line, "From", Vector2.new(pa.X, pa.Y)); set(bone.line, "To", Vector2.new(pb.X, pb.Y))
+								set(bone.line, "Color", o.color); set(bone.line, "Visible", true)
+							elseif bone.line then set(bone.line, "Visible", false) end
+						elseif bone.line then set(bone.line, "Visible", false) end
+					end
+				elseif not o.Skeleton and record.bones then
+					for _, bone in ipairs(record.bones) do if bone.line then set(bone.line, "Visible", false) end end
+				end
+			end
+			if not gunActive then
+				if gunRecord then destroy(gunRecord); gunRecord = nil end
+				return
+			end
+			if clock >= nextGun then
+				nextGun = clock + 0.5
+				local map = fn8()
+				local gun = map and map:FindFirstChild("GunDrop")
+				if gunRecord and gunRecord.root ~= gun then destroy(gunRecord); gunRecord = nil end
+				if not gunRecord and gun and gun:IsA("BasePart") then gunRecord = {root = gun} end
+			end
+			if gunRecord then
+				local gun = gunRecord.root
+				if not gun.Parent then destroy(gunRecord); gunRecord = nil; return end
+				local screen, onScreen = camera:WorldToViewportPoint(gun.Position)
+				if not onScreen or screen.Z <= 0.1 then hide(gunRecord); return end
+				local color = Color3.fromRGB(0, 255, 255)
+				highlight(gunRecord, gun, color, true)
+				info(gunRecord, gun, gun, color, true)
+				if updateText or not gunRecord.distance then
+					local distance = math.floor((cameraPosition - gun.Position).Magnitude)
+					if gunRecord.distance ~= distance then gunRecord.distance = distance; gunRecord.label.Text = "GUN\n[" .. distance .. "]" end
+				end
+			end
+		end))
 	end
 
-	local function fn9(arg, arg2)
-		local v4 = Drawing.new(arg)
-
-		for k, v5 in pairs(arg2) do
-			v4[k] = v5
-		end
-
-		return v4
-	end
-
-	fn3(runService.RenderStepped:Connect(function()
-		local v4 = tbl.FindMurderer()
-		local v5 = tbl.FindSheriff()
-
-		for _, player in ipairs(players:GetPlayers()) do
-			if player ~= players.LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
-				local espColorMurderer, str
-
-				if v4 and player == v4 then
-					espColorMurderer = tbl.Config.ESPColorMurderer
-					str = "Murderer"
-				elseif v5 and player == v5 then
-					espColorMurderer = tbl.Config.ESPColorSheriff
-					str = "Sheriff"
-				else
-					str = nil
-					espColorMurderer = nil
-
-					if tbl.FindInnocent(player) then
-						espColorMurderer = tbl.Config.ESPColorInnocent
-						str = "Innocent"
-					end
-				end
-
-				if str then
-					if not tbl3[player] then
-						tbl3[player] = {
-							Box = fn9("Square", { Thickness = 1, Filled = false, ZIndex = 2 }),
-							Tracer = fn9("Line", { Thickness = 1, Transparency = 1, ZIndex = 1 }),
-							Skeleton = {},
-						}
-
-						for i = 1, 16 do
-							table.insert(tbl3[player].Skeleton, fn9("Line", { Thickness = 1, Transparency = 1, ZIndex = 2 }))
-						end
-					end
-
-					local v6 = tbl3[player]
-					local character = player.Character
-					local humanoid = character.Humanoid
-					local humanoidRootPart = character.HumanoidRootPart
-					local head = character:FindFirstChild("Head")
-
-					if tbl.Config["Highlight" .. str] then
-						local coolwipHighlight = character:FindFirstChild("CoolwipHighlight")
-
-						if not coolwipHighlight then
-							coolwipHighlight = Instance.new("Highlight")
-							coolwipHighlight.Name = "CoolwipHighlight"
-							coolwipHighlight.FillTransparency = 0.85
-							coolwipHighlight.OutlineTransparency = 0
-							coolwipHighlight.Parent = character
-						end
-
-						coolwipHighlight.FillColor = espColorMurderer
-						coolwipHighlight.OutlineColor = espColorMurderer
-						coolwipHighlight.Enabled = true
-					else
-						local coolwipHighlight = character:FindFirstChild("CoolwipHighlight")
-
-						if coolwipHighlight then
-							coolwipHighlight:Destroy()
-						end
-					end
-
-					if tbl.Config["Info" .. str] and (head or humanoidRootPart) then
-						local coolwipInfoESP = character:FindFirstChild("CoolwipInfoESP")
-
-						if not coolwipInfoESP then
-							coolwipInfoESP = Instance.new("BillboardGui", character)
-							coolwipInfoESP.Name = "CoolwipInfoESP"
-							coolwipInfoESP.Size = UDim2.fromOffset(200, 50)
-							coolwipInfoESP.StudsOffset = Vector3.new(0, 3.5, 0)
-							coolwipInfoESP.AlwaysOnTop = true
-							local textLabel = Instance.new("TextLabel", coolwipInfoESP)
-							textLabel.Name = "InfoLabel"
-							textLabel.BackgroundTransparency = 1
-							textLabel.Size = UDim2.fromScale(1, 1)
-							textLabel.TextStrokeTransparency = 0
-							textLabel.Font = Enum.Font.SourceSansBold
-							textLabel.TextSize = 16
-							textLabel.RichText = true
-						end
-
-						coolwipInfoESP.Adornee = head or humanoidRootPart
-						local n = math.floor((currentCamera.CFrame.Position - humanoidRootPart.Position).Magnitude)
-						local infoLabel = coolwipInfoESP:FindFirstChild("InfoLabel")
-
-						if infoLabel then
-							infoLabel.Text = string.format("%s\n<font size='11' color='rgb(221, 221, 221)'>[%d]</font>", player.Name, n)
-							infoLabel.TextColor3 = espColorMurderer
-						end
-					else
-						local coolwipInfoESP = character:FindFirstChild("CoolwipInfoESP")
-
-						if coolwipInfoESP then
-							coolwipInfoESP:Destroy()
-						end
-					end
-
-					local v7, v8 = currentCamera:WorldToViewportPoint(humanoidRootPart.Position)
-
-					if v8 then
-						local n = math.abs(2500 / v7.Z)
-						local n2 = n / 2
-
-						if tbl.Config["Box" .. str] then
-							v6.Box.Visible = true
-							v6.Box.Size = Vector2.new(n2, n)
-							v6.Box.Position = Vector2.new(v7.X - n2 / 2, v7.Y - n / 2)
-							v6.Box.Color = espColorMurderer
-						else
-							v6.Box.Visible = false
-						end
-
-						if tbl.Config["Tracers" .. str] then
-							v6.Tracer.Visible = true
-							v6.Tracer.From = Vector2.new(currentCamera.ViewportSize.X / 2, currentCamera.ViewportSize.Y)
-							v6.Tracer.To = Vector2.new(v7.X, v7.Y + n / 2)
-							v6.Tracer.Color = espColorMurderer
-						else
-							v6.Tracer.Visible = false
-						end
-
-						if tbl.Config["Skeleton" .. str] then
-							local function fn10(arg)
-								if not arg then
-									return nil
-								end
-								local v9 = currentCamera:WorldToViewportPoint(arg.Position)
-								return Vector2.new(v9.X, v9.Y)
-							end
-
-							local tbl4 = humanoid.RigType == Enum.HumanoidRigType.R15 and {
-								{ "Head", "UpperTorso" },
-								{ "UpperTorso", "LowerTorso" },
-								{ "LowerTorso", "LeftUpperLeg" },
-								{ "LeftUpperLeg", "LeftLowerLeg" },
-								{ "LeftLowerLeg", "LeftFoot" },
-								{ "LowerTorso", "RightUpperLeg" },
-								{ "RightUpperLeg", "RightLowerLeg" },
-								{ "RightLowerLeg", "RightFoot" },
-								{ "UpperTorso", "LeftUpperArm" },
-								{ "LeftUpperArm", "LeftLowerArm" },
-								{ "LeftLowerArm", "LeftHand" },
-								{ "UpperTorso", "RightUpperArm" },
-								{ "RightUpperArm", "RightLowerArm" },
-								{ "RightLowerArm", "RightHand" },
-							} or {
-								{ "Head", "Torso" },
-								{ "Torso", "Left Arm" },
-								{ "Torso", "Right Arm" },
-								{ "Torso", "Left Leg" },
-								{ "Torso", "Right Leg" },
-							}
-
-							for i, v9 in ipairs(tbl4) do
-								local v10 = character:FindFirstChild(v9[1])
-								local v11 = character:FindFirstChild(v9[2])
-
-								if v10 and v11 and v6.Skeleton[i] then
-									v6.Skeleton[i].Visible = true
-									v6.Skeleton[i].From = fn10(v10)
-									v6.Skeleton[i].To = fn10(v11)
-									v6.Skeleton[i].Color = espColorMurderer
-								elseif v6.Skeleton[i] then
-									v6.Skeleton[i].Visible = false
-								end
-							end
-						else
-							for _, v9 in ipairs(v6.Skeleton) do
-								v9.Visible = false
-							end
-						end
-					else
-						v6.Box.Visible = false
-						v6.Tracer.Visible = false
-
-						for _, v9 in ipairs(v6.Skeleton) do
-							v9.Visible = false
-						end
-					end
-				elseif tbl3[player] then
-					tbl3[player].Box.Visible = false
-					tbl3[player].Tracer.Visible = false
-
-					for _, v6 in ipairs(tbl3[player].Skeleton) do
-						v6.Visible = false
-					end
-				end
-			end
-		end
-
-		local gunDrop = fn8()
-		gunDrop = gunDrop and gunDrop:FindFirstChild("GunDrop")
-
-		if gunDrop and gunDrop:IsA("BasePart") then
-			local espGunDropped = tbl.Config.ESPGunDropped
-
-			if espGunDropped then
-				local coolwipGunHighlight = gunDrop:FindFirstChild("CoolwipGunHighlight")
-
-				if not coolwipGunHighlight then
-					coolwipGunHighlight = Instance.new("Highlight")
-					coolwipGunHighlight.Name = "CoolwipGunHighlight"
-					coolwipGunHighlight.FillTransparency = 0.4
-					coolwipGunHighlight.OutlineTransparency = 0
-					coolwipGunHighlight.Parent = gunDrop
-				end
-
-				coolwipGunHighlight.FillColor = Color3.fromRGB(0, 255, 255)
-				coolwipGunHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-				coolwipGunHighlight.Enabled = true
-			else
-				local coolwipGunHighlight = gunDrop:FindFirstChild("CoolwipGunHighlight")
-
-				if coolwipGunHighlight then
-					coolwipGunHighlight:Destroy()
-				end
-			end
-
-			if espGunDropped then
-				local coolwipGunInfo = gunDrop:FindFirstChild("CoolwipGunInfo")
-
-				if not coolwipGunInfo then
-					coolwipGunInfo = Instance.new("BillboardGui", gunDrop)
-					coolwipGunInfo.Name = "CoolwipGunInfo"
-					coolwipGunInfo.Size = UDim2.fromOffset(100, 40)
-					coolwipGunInfo.StudsOffset = Vector3.new(0, 2, 0)
-					coolwipGunInfo.AlwaysOnTop = true
-					local textLabel = Instance.new("TextLabel", coolwipGunInfo)
-					textLabel.BackgroundTransparency = 1
-					textLabel.Size = UDim2.fromScale(1, 1)
-					textLabel.TextStrokeTransparency = 0
-					textLabel.Font = Enum.Font.SourceSansBold
-					textLabel.TextSize = 18
-					textLabel.RichText = true
-					textLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
-				end
-
-				local n = math.floor((currentCamera.CFrame.Position - gunDrop.Position).Magnitude)
-				local textLabel = coolwipGunInfo:FindFirstChildOfClass("TextLabel")
-
-				if textLabel then
-					textLabel.Text = string.format("<b>GUN</b>\n<font size='13' color='rgb(221, 221, 221)'>[%d]</font>", n)
-				end
-			else
-				local coolwipGunInfo = gunDrop:FindFirstChild("CoolwipGunInfo")
-
-				if coolwipGunInfo then
-					coolwipGunInfo:Destroy()
-				end
-			end
-		end
-
-		for k, v6 in pairs(tbl3) do
-			if not k.Parent then
-				v6.Box:Remove()
-				v6.Tracer:Remove()
-
-				for _, v7 in ipairs(v6.Skeleton) do
-					v7:Remove()
-				end
-
-				tbl3[k] = nil
-			end
-		end
-	end))
-
-	tbl.Players.PlayerRemoving:Connect(function(player)
-		if tbl3[player] then
-			tbl3[player].Box:Remove()
-			tbl3[player].Tracer:Remove()
-
-			for _, v4 in ipairs(tbl3[player].Skeleton) do
-				v4:Remove()
-			end
-
-			tbl3[player] = nil
-		end
-	end)
 
 	tbl.FlingTarget = function(arg)
 		if not arg or not arg.Character then
