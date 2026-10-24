@@ -39654,6 +39654,65 @@ if ok and result then
 		Buttons = {},
 	}
 
+	-- Shared discovery caches and bounded, cleanup-aware periodic checks.
+	tbl.Active = true
+	tbl.PartCaches = {}
+	tbl.RoleCache = {}
+	do
+		local playerList = players:GetPlayers()
+		fn3(players.PlayerAdded:Connect(function(player)
+			if not table.find(playerList, player) then table.insert(playerList, player) end
+			table.clear(tbl.RoleCache)
+		end))
+		fn3(players.PlayerRemoving:Connect(function(player)
+			local index = table.find(playerList, player)
+			if index then table.remove(playerList, index) end
+			table.clear(tbl.RoleCache)
+		end))
+		function tbl.GetPlayersCached() return playerList end
+	end
+	function tbl.Every(period, callback)
+		local elapsed, running = 0, false
+		return fn3(runService.Heartbeat:Connect(function(dt)
+			if not tbl.Active then return end
+			elapsed += dt
+			if running or elapsed < period then return end
+			elapsed, running = 0, true
+			local success, message = pcall(callback)
+			running = false
+			if not success then warn("Coolwip Hub update: " .. tostring(message)) end
+		end))
+	end
+	function tbl.GetCachedParts(character)
+		local cache = tbl.PartCaches[character]
+		if cache then return cache.parts end
+		cache = {parts = {}, connections = {}}
+		tbl.PartCaches[character] = cache
+		local function add(part)
+			if part:IsA("BasePart") then cache.parts[part] = true end
+		end
+		cache.connections[1] = fn3(character.DescendantAdded:Connect(add))
+		cache.connections[2] = fn3(character.DescendantRemoving:Connect(function(part) cache.parts[part] = nil end))
+		cache.connections[3] = fn3(character.AncestryChanged:Connect(function(_, parent)
+			if parent then return end
+			for _, connection in ipairs(cache.connections) do fn4(connection) end
+			table.clear(cache.parts)
+			tbl.PartCaches[character] = nil
+		end))
+		for _, part in ipairs(character:GetDescendants()) do add(part) end
+		return cache.parts
+	end
+	function tbl.CachedRole(key, scan)
+		return function()
+			local now = os.clock()
+			local cached = tbl.RoleCache[key]
+			if cached and now < cached.expires and (not cached.value or cached.value.Parent) then return cached.value end
+			local value = scan()
+			tbl.RoleCache[key] = {value = value, expires = now + 0.15}
+			return value
+		end
+	end
+
 	local function fn5(character)
 		tbl.Character = character
 
@@ -39701,7 +39760,7 @@ if ok and result then
 			end
 
 			if tbl.Character then
-				for _, descendant in pairs(tbl.Character:GetDescendants()) do
+				for descendant in pairs(tbl.GetCachedParts(tbl.Character)) do
 					if descendant:IsA("BasePart") and descendant.Name ~= "HumanoidRootPart" then
 						descendant.Transparency = 0
 					end
@@ -39712,7 +39771,7 @@ if ok and result then
 		end
 
 		if tbl.Character then
-			for _, descendant in pairs(tbl.Character:GetDescendants()) do
+			for descendant in pairs(tbl.GetCachedParts(tbl.Character)) do
 				if descendant:IsA("BasePart") and descendant.Name ~= "HumanoidRootPart" then
 					descendant.Transparency = 0.5
 				end
@@ -39923,7 +39982,7 @@ if ok and result then
 		return nil
 	end
 
-	local function fn8()
+	local function scanMap()
 		for _, child in ipairs(workspace_:GetChildren()) do
 			if (child:IsA("Model") or child:IsA("Folder")) and not tbl2[child.Name] and not players:GetPlayerFromCharacter(child) then
 				if child:FindFirstChild("Spawns") or child:FindFirstChild("CoinContainer") or child:FindFirstChild("CoinArea") or child:FindFirstChild("Coin_Server", true) or child:FindFirstChild("GunDrop") then
@@ -39933,6 +39992,16 @@ if ok and result then
 		end
 
 		return nil
+	end
+
+	local cachedMap, nextMapScan = nil, 0
+	local function fn8()
+		local now = os.clock()
+		if cachedMap and cachedMap.Parent ~= workspace_ then cachedMap, nextMapScan = nil, 0 end
+		if now < nextMapScan then return cachedMap end
+		nextMapScan = now + 0.5
+		cachedMap = scanMap()
+		return cachedMap
 	end
 
 	tbl.GetTimer = function()
@@ -40035,7 +40104,7 @@ if ok and result then
 			return nil
 		end
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			if player.Name:lower() == arg:lower() then
 				return player
 			end
@@ -40057,7 +40126,7 @@ if ok and result then
 			end
 		end
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			local backpack = player:FindFirstChild("Backpack")
 			if backpack and backpack:FindFirstChild("Knife") or player.Character and player.Character:FindFirstChild("Knife") then
 				return player
@@ -40079,7 +40148,7 @@ if ok and result then
 			end
 		end
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			local backpack = player:FindFirstChild("Backpack")
 			if backpack and backpack:FindFirstChild("Gun") or player.Character and player.Character:FindFirstChild("Gun") then
 				return player
@@ -40088,6 +40157,9 @@ if ok and result then
 
 		return nil
 	end
+
+	tbl.FindMurderer = tbl.CachedRole("Murderer", tbl.FindMurderer)
+	tbl.FindSheriff = tbl.CachedRole("Sheriff", tbl.FindSheriff)
 
 	tbl.FindInnocent = function(arg)
 		if not arg or not tbl.PlayerData then
@@ -40113,6 +40185,7 @@ if ok and result then
 		fn3(playerDataChanged.OnClientEvent:Connect(function(playerData)
 			if typeof(playerData) == "table" then
 				tbl.PlayerData = playerData
+				table.clear(tbl.RoleCache)
 			end
 		end))
 	end
@@ -40236,7 +40309,7 @@ if ok and result then
 			-- Role/part lookups happen four times a second, not every frame.
 			local murderer, sheriff = tbl.FindMurderer(), tbl.FindSheriff()
 			for _, record in pairs(records) do record.keep = false end
-			for _, player in ipairs(players:GetPlayers()) do
+			for _, player in ipairs(tbl.GetPlayersCached()) do
 				if player == localPlayer then continue end
 				local role = player == murderer and "Murderer" or player == sheriff and "Sheriff" or tbl.FindInnocent(player) and "Innocent"
 				local o = role and roleOptions[role]
@@ -40433,7 +40506,7 @@ if ok and result then
 				local now = tick()
 				local n = 0
 
-				while true do
+				while tbl.Active do
 					pcall(function()
 						if rootPart and humanoid2 and arg2.Parent then
 							if arg2.AssemblyLinearVelocity.Magnitude < 50 then
@@ -40679,7 +40752,7 @@ if ok and result then
 
 		if autoShootMurderer then
 			thread = task.spawn(function()
-				while tbl.Config.AutoShootMurderer do
+				while tbl.Active and tbl.Config.AutoShootMurderer do
 					tbl.ShootMurderer()
 					task.wait(0.2)
 				end
@@ -40762,7 +40835,7 @@ if ok and result then
 
 		if autoWallBangEnabled then
 			task.spawn(function()
-				while tbl.Config.AutoWallBangEnabled do
+				while tbl.Active and tbl.Config.AutoWallBangEnabled do
 					tbl.WallBangShoot()
 					task.wait(0.2)
 				end
@@ -40795,11 +40868,11 @@ if ok and result then
 				fn4(v4)
 			end
 
-			v4 = fn3(runService.Heartbeat:Connect(function()
+			v4 = tbl.Every(0.1, function()
 				if tbl.Humanoid and tbl.Humanoid.WalkSpeed ~= tbl.Config.WalkSpeed then
 					tbl.Humanoid.WalkSpeed = tbl.Config.WalkSpeed
 				end
-			end))
+			end)
 		else
 			if v4 then
 				fn4(v4)
@@ -40831,11 +40904,11 @@ if ok and result then
 				fn4(v5)
 			end
 
-			v5 = fn3(runService.Heartbeat:Connect(function()
+			v5 = tbl.Every(0.1, function()
 				if tbl.Humanoid and tbl.Humanoid.JumpPower ~= tbl.Config.JumpPower then
 					tbl.Humanoid.JumpPower = tbl.Config.JumpPower
 				end
-			end))
+			end)
 		else
 			if v5 then
 				fn4(v5)
@@ -40866,7 +40939,7 @@ if ok and result then
 			tbl4 = {}
 
 			if tbl.Character then
-				for _, descendant in ipairs(tbl.Character:GetDescendants()) do
+				for descendant in pairs(tbl.GetCachedParts(tbl.Character)) do
 					if descendant:IsA("BasePart") then
 						tbl4[descendant] = descendant.CanCollide
 						descendant.CanCollide = false
@@ -40883,9 +40956,10 @@ if ok and result then
 					return
 				end
 
-				for _, descendant in ipairs(tbl.Character:GetDescendants()) do
-					if descendant:IsA("BasePart") then
-						descendant.CanCollide = false
+				for descendant in pairs(tbl.GetCachedParts(tbl.Character)) do
+					if descendant.Parent then
+						if tbl4[descendant] == nil then tbl4[descendant] = descendant.CanCollide end
+						if descendant.CanCollide then descendant.CanCollide = false end
 					end
 				end
 			end))
@@ -40956,7 +41030,7 @@ if ok and result then
 		end
 
 		if autoGrabGun then
-			connection = runService.Heartbeat:Connect(tbl.GrabGun)
+			connection = tbl.Every(0.1, tbl.GrabGun)
 		end
 	end
 
@@ -40974,7 +41048,7 @@ if ok and result then
 				return
 			end
 
-			for _, player in ipairs(players:GetPlayers()) do
+			for _, player in ipairs(tbl.GetPlayersCached()) do
 				if player ~= localPlayer and fn2(player) then
 					local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
 
@@ -40988,7 +41062,7 @@ if ok and result then
 		else
 			local tbl5 = {}
 
-			for _, player in ipairs(players:GetPlayers()) do
+			for _, player in ipairs(tbl.GetPlayersCached()) do
 				if player ~= localPlayer and fn2(player) then
 					table.insert(tbl5, player)
 				end
@@ -41066,7 +41140,7 @@ if ok and result then
 						return
 					end
 
-					for _, player in ipairs(players:GetPlayers()) do
+					for _, player in ipairs(tbl.GetPlayersCached()) do
 						if player ~= localPlayer and fn2(player) then
 							local humanoidRootPart2 = player.Character:FindFirstChild("HumanoidRootPart")
 
@@ -41080,7 +41154,7 @@ if ok and result then
 				else
 					local tbl5 = {}
 
-					for _, player in ipairs(players:GetPlayers()) do
+					for _, player in ipairs(tbl.GetPlayersCached()) do
 						if player ~= localPlayer and fn2(player) then
 							local humanoidRootPart2 = player.Character:FindFirstChild("HumanoidRootPart")
 
@@ -41136,7 +41210,7 @@ if ok and result then
 
 		if autoKillAll then
 			thread2 = task.spawn(function()
-				while tbl.Config.AutoKillAll do
+				while tbl.Active and tbl.Config.AutoKillAll do
 					pcall(tbl.KillAll)
 					task.wait(0.1)
 				end
@@ -41156,7 +41230,7 @@ if ok and result then
 	local function fn11(arg, arg2)
 		local v9 = nil
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			if player ~= localPlayer and fn2(player) then
 				local humanoidRootPart = player.Character.HumanoidRootPart
 				local magnitude = (arg - humanoidRootPart.Position).Magnitude
@@ -41233,7 +41307,7 @@ if ok and result then
 
 		if silentThrow then
 			thread3 = task.spawn(function()
-				while tbl.Config.SilentThrow do
+				while tbl.Active and tbl.Config.SilentThrow do
 					if tbl.FindMurderer() == localPlayer then
 						tbl.ExecuteSilentThrow()
 					end
@@ -41307,16 +41381,16 @@ if ok and result then
 					return
 				end
 
-				for _, player in ipairs(players:GetPlayers()) do
+				for _, player in ipairs(tbl.GetPlayersCached()) do
 					if player ~= localPlayer and player.Character then
-						for _, descendant in ipairs(player.Character:GetDescendants()) do
+						for descendant in pairs(tbl.GetCachedParts(player.Character)) do
 							if descendant:IsA("BasePart") then
 								if descendant.CanCollide then
 									descendant.CanCollide = false
 								end
 
-								descendant.AssemblyLinearVelocity = Vector3.zero
-								descendant.AssemblyAngularVelocity = Vector3.zero
+								if descendant.AssemblyLinearVelocity ~= Vector3.zero then descendant.AssemblyLinearVelocity = Vector3.zero end
+								if descendant.AssemblyAngularVelocity ~= Vector3.zero then descendant.AssemblyAngularVelocity = Vector3.zero end
 							end
 						end
 					end
@@ -41372,7 +41446,7 @@ if ok and result then
 		textLabel.Parent = screenGui
 
 		thread4 = task.spawn(function()
-			while screenGui and screenGui.Parent do
+			while tbl.Active and screenGui and screenGui.Parent do
 				local v10 = tbl.GetTimer()
 				textLabel.Text = v10 and fn12(v10)
 				task.wait(0.5)
@@ -41614,8 +41688,8 @@ if ok and result then
 		fn16(arg, imageButton, frame, frame2, uiStroke, arg3)
 
 		task.spawn(function()
-			while imageButton.Parent do
-				frame2.Visible = not tbl.Config.ButtonsLocked
+			while tbl.Active and imageButton.Parent do
+				if frame2.Visible == tbl.Config.ButtonsLocked then frame2.Visible = not tbl.Config.ButtonsLocked end
 				task.wait(0.2)
 			end
 		end)
@@ -41637,7 +41711,7 @@ if ok and result then
 			return
 		end
 
-		connection3 = tbl.RunService.Heartbeat:Connect(function()
+		connection3 = tbl.Every(0.25, function()
 			local v10 = tbl.GetTimer()
 
 			if not v10 or v10 <= 0 or v10 > 250 then
@@ -41694,7 +41768,7 @@ if ok and result then
 		if notifyGunDropped then
 			flag = false
 
-			connection4 = tbl.RunService.Heartbeat:Connect(function()
+			connection4 = tbl.Every(0.25, function()
 				if not tbl.Config.NotifyGunDropped then
 					return
 				end
@@ -41723,6 +41797,13 @@ if ok and result then
 	end
 
 	getgenv().CoolwipHub_Cleanup = function()
+		tbl.Active = false
+		if connection2 then connection2:Disconnect(); connection2 = nil end
+		if screenGui then screenGui:Destroy(); screenGui = nil end
+		for _, button in pairs(tbl.Buttons) do if typeof(button) == "Instance" then button:Destroy() end end
+		if tbl.Window then pcall(function() tbl.Window:Destroy() end); tbl.Window = nil end
+		table.clear(tbl.PartCaches)
+		table.clear(tbl.RoleCache)
 		for _, coolwipHubConnection in ipairs(getgenv().CoolwipHub_Connections) do
 			if typeof(coolwipHubConnection) == "RBXScriptConnection" and coolwipHubConnection.Connected then
 				pcall(function()
@@ -41822,6 +41903,7 @@ if ok and result then
 		},
 	})
 
+	tbl.Window = v10
 	v10:Tag({ Title = "0.1.8.1", Color = Color3.fromRGB(156, 35, 57) })
 	local v11 = v10:Tab({ Title = "Home", Icon = "house", Border = true })
 	local v12 = v10:Tab({ Title = "Movement", Icon = "footprints", Border = true })
@@ -41851,6 +41933,7 @@ if ok and result then
 		Icon = "user",
 	})
 
+	local lastStatusTitle, lastStatusDesc
 	local v19 = v11:Paragraph({
 		Title = "Game State: <font color='rgb(255, 165, 0)'>Scanning...</font>",
 		Desc = "Waiting for game data...",
@@ -41858,7 +41941,9 @@ if ok and result then
 	})
 
 	task.spawn(function()
-		while task.wait(1) do
+		while tbl.Active do
+			task.wait(1)
+			if not tbl.Active then break end
 			pcall(function()
 				local v20 = tbl.GetTimer()
 				local flag2 = typeof(v20) == "number" and v20 > 0
@@ -41886,13 +41971,10 @@ if ok and result then
 
 				gameState = gameState and "<font color='rgb(0, 255, 0)'>In Progress</font>" or "<font color='rgb(255, 255, 255)'>Intermission</font>"
 
-				if v19.SetTitle then
-					v19:SetTitle("Game State: " .. gameState)
-				end
-
-				if v19.SetDesc then
-					v19:SetDesc("<b>Timer:</b> " .. str .. "\n<b>Murderer:</b> " .. str2 .. "\n<b>Sheriff:</b> " .. str3)
-				end
+				local title = "Game State: " .. gameState
+				local desc = "<b>Timer:</b> " .. str .. "\n<b>Murderer:</b> " .. str2 .. "\n<b>Sheriff:</b> " .. str3
+				if v19.SetTitle and title ~= lastStatusTitle then lastStatusTitle = title; v19:SetTitle(title) end
+				if v19.SetDesc and desc ~= lastStatusDesc then lastStatusDesc = desc; v19:SetDesc(desc) end
 			end)
 		end
 	end)
@@ -42334,7 +42416,7 @@ if ok and result then
 	local function fn18()
 		local tbl6 = {}
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			if player ~= tbl.Player then
 				table.insert(tbl6, player.Name)
 			end
@@ -42416,7 +42498,7 @@ if ok and result then
 	local function fn19()
 		local tbl6 = {}
 
-		for _, player in ipairs(players:GetPlayers()) do
+		for _, player in ipairs(tbl.GetPlayersCached()) do
 			if player ~= tbl.Player then
 				table.insert(tbl6, player.Name)
 			end
@@ -42453,7 +42535,7 @@ if ok and result then
 		Title = "Fling All Players",
 		Icon = "wind",
 		Callback = function()
-			for _, player in ipairs(players:GetPlayers()) do
+			for _, player in ipairs(tbl.GetPlayersCached()) do
 				if player ~= tbl.Player and player.Character then
 					tbl.FlingTarget(player)
 				end
