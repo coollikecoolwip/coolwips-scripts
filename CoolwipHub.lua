@@ -40113,81 +40113,205 @@ if ok and result then
 		return nil
 	end
 
-	tbl.FindMurderer = function()
-		if tbl.PlayerData then
-			for k, v4 in pairs(tbl.PlayerData) do
-				if v4.Role ~= "Murderer" then
-					continue
+	-- One cached role snapshot for all game modes and all consumers.
+	do
+		local aliases = {
+			murderer = "Murderer", murderers = "Murderer", infected = "Murderer", zombie = "Murderer",
+			sheriff = "Sheriff", sheriffs = "Sheriff", hero = "Sheriff", 
+			innocent = "Innocent", innocents = "Innocent",
+		}
+		local function canonical(value)
+			return type(value) == "string" and aliases[value:match("^%s*(.-)%s*$"):lower()] or nil
+		end
+		local watched = {}
+		tbl.PlayerDataCharacters = {}
+		tbl.RoleDataReceivedAt = -math.huge
+		function tbl.InvalidateRoles() table.clear(tbl.RoleCache) end
+		local function disconnectAll(connections)
+			for _, connection in ipairs(connections) do fn4(connection) end
+			table.clear(connections)
+		end
+		local function watch(signal, callback, connections)
+			if signal then connections[#connections + 1] = fn3(signal:Connect(callback)) end
+		end
+		local function watchPlayer(player)
+			if watched[player] then return end
+			local state = {playerConnections = {}, characterConnections = {}, backpackConnections = {}, humanoidConnections = {}, trustPlayerAttribute = true, respawned = false}
+			watched[player] = state
+			local function bindHumanoid(humanoid)
+				disconnectAll(state.humanoidConnections)
+				if humanoid then watch(humanoid.Died, tbl.InvalidateRoles, state.humanoidConnections) end
+			end
+			local function equipmentChanged(child)
+				if child:IsA("Tool") and (child.Name == "Knife" or child.Name == "Gun") then tbl.InvalidateRoles() end
+			end
+			local function bindBackpack(backpack)
+				disconnectAll(state.backpackConnections)
+				if backpack then
+					watch(backpack.ChildAdded, equipmentChanged, state.backpackConnections)
+					watch(backpack.ChildRemoved, equipmentChanged, state.backpackConnections)
 				end
-				local v5 = tbl.GetPlayerByName(k)
-				if v5 then
-					return v5
+				tbl.InvalidateRoles()
+			end
+			local function bindCharacter(character, respawned)
+				disconnectAll(state.characterConnections)
+				bindHumanoid(nil)
+				if respawned then
+					state.respawned, state.trustPlayerAttribute = true, false
+					tbl.PlayerDataCharacters[player] = false
 				end
-			end
-		end
-
-		for _, player in ipairs(tbl.GetPlayersCached()) do
-			local backpack = player:FindFirstChild("Backpack")
-			if backpack and backpack:FindFirstChild("Knife") or player.Character and player.Character:FindFirstChild("Knife") then
-				return player
-			end
-		end
-
-		return nil
-	end
-
-	tbl.FindSheriff = function()
-		if tbl.PlayerData then
-			for k, v4 in pairs(tbl.PlayerData) do
-				if v4.Role == "Sheriff" or v4.Role == "Hero" then
-					local v5 = tbl.GetPlayerByName(k)
-					if v5 then
-						return v5
-					end
+				if character then
+					watch(character:GetAttributeChangedSignal("Role"), tbl.InvalidateRoles, state.characterConnections)
+					watch(character.ChildAdded, function(child)
+						equipmentChanged(child)
+						if child:IsA("Humanoid") then bindHumanoid(child); tbl.InvalidateRoles() end
+					end, state.characterConnections)
+					watch(character.ChildRemoved, function(child)
+						equipmentChanged(child)
+						if child:IsA("Humanoid") then bindHumanoid(nil); tbl.InvalidateRoles() end
+					end, state.characterConnections)
+					bindHumanoid(character:FindFirstChildOfClass("Humanoid"))
 				end
+				tbl.InvalidateRoles()
 			end
+			watch(player.CharacterAdded, function(character) bindCharacter(character, true) end, state.playerConnections)
+			watch(player.CharacterRemoving, function() bindCharacter(nil, true) end, state.playerConnections)
+			watch(player:GetAttributeChangedSignal("Role"), function()
+				state.trustPlayerAttribute = true
+				tbl.InvalidateRoles()
+			end, state.playerConnections)
+			watch(player.ChildAdded, function(child) if child:IsA("Backpack") then bindBackpack(child) end end, state.playerConnections)
+			watch(player.ChildRemoved, function(child) if child:IsA("Backpack") then bindBackpack(nil) end end, state.playerConnections)
+			bindCharacter(player.Character, false)
+			bindBackpack(player:FindFirstChild("Backpack"))
 		end
-
-		for _, player in ipairs(tbl.GetPlayersCached()) do
-			local backpack = player:FindFirstChild("Backpack")
-			if backpack and backpack:FindFirstChild("Gun") or player.Character and player.Character:FindFirstChild("Gun") then
-				return player
+		for _, player in ipairs(tbl.GetPlayersCached()) do watchPlayer(player) end
+		fn3(players.PlayerAdded:Connect(watchPlayer))
+		fn3(players.PlayerRemoving:Connect(function(player)
+			local state = watched[player]
+			if state then
+				disconnectAll(state.playerConnections); disconnectAll(state.characterConnections)
+				disconnectAll(state.backpackConnections); disconnectAll(state.humanoidConnections)
+				watched[player] = nil
 			end
-		end
-
-		return nil
-	end
-
-	tbl.FindMurderer = tbl.CachedRole("Murderer", tbl.FindMurderer)
-	tbl.FindSheriff = tbl.CachedRole("Sheriff", tbl.FindSheriff)
-
-	tbl.FindInnocent = function(arg)
-		if not arg or not tbl.PlayerData then
-			return false
-		end
-		local v4 = tbl.PlayerData[arg.Name]
-
-		if v4 then
-			if v4.Role == "Innocent" then
-				return true
-			end
-		end
-
-		return false
-	end
-
-	local playerDataChanged = replicatedStorage:WaitForChild("Remotes"):WaitForChild("Gameplay"):WaitForChild("PlayerDataChanged", 5)
-	if not playerDataChanged then
-		return
-	end
-
-	if playerDataChanged then
-		fn3(playerDataChanged.OnClientEvent:Connect(function(playerData)
-			if typeof(playerData) == "table" then
-				tbl.PlayerData = playerData
-				table.clear(tbl.RoleCache)
-			end
+			tbl.PlayerDataCharacters[player] = nil
+			tbl.InvalidateRoles()
 		end))
+		function tbl.AcceptRoleData(data)
+			if type(data) ~= "table" then return end
+			tbl.PlayerData = data
+			tbl.RoleDataReceivedAt = os.clock()
+			for _, player in ipairs(tbl.GetPlayersCached()) do tbl.PlayerDataCharacters[player] = player.Character or false end
+			tbl.InvalidateRoles()
+		end
+		local function toolNamed(container, name)
+			local object = container and container:FindFirstChild(name)
+			return object and object:IsA("Tool") or false
+		end
+
+		function tbl.GetRoleSnapshot(force)
+			local now = os.clock()
+			local cached = tbl.RoleCache.All
+			if not force and cached and now < cached.expires then return cached end
+			local snapshot = {Murderer = {}, Sheriff = {}, Innocent = {}, byPlayer = {}, expires = now + 0.15}
+			for _, player in ipairs(tbl.GetPlayersCached()) do
+				local character = player.Character
+				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+				if not (player.Parent and humanoid and humanoid.Health > 0) then continue end
+				local data = tbl.PlayerData or {}
+				local entry = data[player.Name] or data[player.UserId] or data[tostring(player.UserId)]
+				local state = watched[player]
+				local dataCharacter = tbl.PlayerDataCharacters[player]
+				local sameLife = dataCharacter == character or (dataCharacter == nil and not (state and state.respawned))
+				local stored = sameLife and (type(entry) == "table" and (entry.Role or entry.role) or entry) or nil
+				local characterRole = canonical(character:GetAttribute("Role"))
+				local playerRole = (not state or state.trustPlayerAttribute) and canonical(player:GetAttribute("Role")) or nil
+				local dataRole = canonical(stored)
+				local role = characterRole or dataRole or playerRole
+				local backpack = player:FindFirstChild("Backpack")
+				local knife = toolNamed(character, "Knife") or toolNamed(backpack, "Knife")
+				local gun = toolNamed(character, "Gun") or toolNamed(backpack, "Gun")
+				local equipmentRole = knife and not gun and "Murderer" or gun and not knife and "Sheriff" or nil
+				-- Fresh replicated metadata beats contradictory equipment. Older metadata
+				-- can be corrected by a real tool after conversions or gun pickups.
+				local freshData = dataRole and now - tbl.RoleDataReceivedAt < 1
+				if equipmentRole and not characterRole and not freshData then role = equipmentRole end
+				-- Two weapons with no explicit role are ambiguous: leave Unknown.
+
+				if role then
+					snapshot.byPlayer[player] = role
+					table.insert(snapshot[role], player)
+				end
+			end
+			for _, role in ipairs({"Murderer", "Sheriff", "Innocent"}) do
+				table.sort(snapshot[role], function(a, b) return a.Name < b.Name end)
+			end
+			tbl.RoleCache.All = snapshot
+			return snapshot
+		end
+		function tbl.GetRole(player) return tbl.GetRoleSnapshot().byPlayer[player] end
+		function tbl.FindMurderers() return tbl.GetRoleSnapshot().Murderer end
+		function tbl.FindSheriffs() return tbl.GetRoleSnapshot().Sheriff end
+		function tbl.FindInnocent(player) return tbl.GetRole(player) == "Innocent" end
+		function tbl.RoleNames(role, empty)
+			local names = {}
+			for _, player in ipairs(tbl.GetRoleSnapshot()[role]) do names[#names + 1] = player.Name end
+			return #names > 0 and table.concat(names, ", ") or (empty or "Unknown")
+		end
+		function tbl.NearestRole(role)
+			local source = tbl.RootPart
+			local nearest, best = nil, math.huge
+			for _, player in ipairs(tbl.GetRoleSnapshot()[role]) do
+				if player == localPlayer then continue end
+				local character = player.Character
+				local root = character and character:FindFirstChild("HumanoidRootPart")
+				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+				if not (player.Parent and root and humanoid and humanoid.Health > 0) then continue end
+				local distance = source and (source.Position - root.Position).Magnitude or 0
+				if distance < best then nearest, best = player, distance end
+			end
+			return nearest
+		end
+		-- Compatibility for single-target controls; never select the local player.
+		function tbl.FindMurderer() return tbl.NearestRole("Murderer") end
+		function tbl.FindSheriff() return tbl.NearestRole("Sheriff") end
+		function tbl.RoleMessages()
+			tbl.GetRoleSnapshot(true) -- Recheck immediately before announcing.
+			local combined = "Murderer: " .. tbl.RoleNames("Murderer") .. " | Sheriff: " .. tbl.RoleNames("Sheriff")
+			if #combined <= 180 then return {combined} end
+			local messages = {}
+			for _, role in ipairs({"Murderer", "Sheriff"}) do
+				local prefix = role == "Murderer" and "Murderer: " or "Sheriff: "
+				local line = prefix
+				for _, player in ipairs(tbl.GetRoleSnapshot()[role]) do
+					local item = (line == prefix and "" or ", ") .. player.Name
+					if #line + #item > 180 then messages[#messages + 1] = line; line = prefix .. player.Name
+					else line ..= item end
+				end
+				messages[#messages + 1] = line == prefix and prefix .. "Unknown" or line
+			end
+			return messages
+		end
+	end
+
+	tbl.Every(0.5, function() tbl.GetRoleSnapshot() end)
+
+	-- Some private modes omit this remote; equipment/attributes still work.
+	do
+		local attached, waiting = false, nil
+		local function attach(remote)
+			if attached or remote.Name ~= "PlayerDataChanged" or not remote:IsA("RemoteEvent") then return end
+			attached = true
+			fn3(remote.OnClientEvent:Connect(function(playerData)
+				tbl.AcceptRoleData(playerData)
+			end))
+			if waiting then fn4(waiting); waiting = nil end
+		end
+		waiting = fn3(replicatedStorage.DescendantAdded:Connect(attach))
+		local remotes = replicatedStorage:FindFirstChild("Remotes")
+		local gameplay = remotes and remotes:FindFirstChild("Gameplay")
+		local remote = gameplay and gameplay:FindFirstChild("PlayerDataChanged")
+		if remote then attach(remote) end
 	end
 
 	-- Lightweight ESP: cached discovery, lazy visuals, bounded update rates.
@@ -40307,11 +40431,11 @@ if ok and result then
 		end
 		local function refresh()
 			-- Role/part lookups happen four times a second, not every frame.
-			local murderer, sheriff = tbl.FindMurderer(), tbl.FindSheriff()
+			local roleSnapshot = tbl.GetRoleSnapshot()
 			for _, record in pairs(records) do record.keep = false end
 			for _, player in ipairs(tbl.GetPlayersCached()) do
 				if player == localPlayer then continue end
-				local role = player == murderer and "Murderer" or player == sheriff and "Sheriff" or tbl.FindInnocent(player) and "Innocent"
+				local role = roleSnapshot.byPlayer[player]
 				local o = role and roleOptions[role]
 				local character = player.Character
 				local record = records[player]
@@ -40643,8 +40767,8 @@ if ok and result then
 		end
 	end
 
-	tbl.Prediction = function()
-		local v4 = tbl.FindMurderer()
+	tbl.Prediction = function(target)
+		local v4 = target or tbl.FindMurderer()
 		if not v4 or not v4.Character then
 			return nil
 		end
@@ -40691,11 +40815,11 @@ if ok and result then
 		if not gun then
 			return false
 		end
-		local v4 = tbl.Prediction()
+		local v5 = tbl.FindMurderer()
+		local v4 = v5 and tbl.Prediction(v5)
 		if not v4 then
 			return false
 		end
-		local v5 = tbl.FindMurderer()
 		if not v5 or not v5.Character then
 			return false
 		end
@@ -41246,7 +41370,7 @@ if ok and result then
 	end
 
 	tbl.ExecuteSilentThrow = function()
-		if tbl.FindMurderer() ~= localPlayer or not fn2(localPlayer) then
+		if tbl.GetRole(localPlayer) ~= "Murderer" or not fn2(localPlayer) then
 			return
 		end
 		local knife = tbl.Character:FindFirstChild("Knife") or tbl.Backpack:FindFirstChild("Knife")
@@ -41308,7 +41432,7 @@ if ok and result then
 		if silentThrow then
 			thread3 = task.spawn(function()
 				while tbl.Active and tbl.Config.SilentThrow do
-					if tbl.FindMurderer() == localPlayer then
+					if tbl.GetRole(localPlayer) == "Murderer" then
 						tbl.ExecuteSilentThrow()
 					end
 
@@ -41328,16 +41452,24 @@ if ok and result then
 		end
 	end
 
+	local announcingRoles = false
 	tbl.ChatRoles = function()
-		local v9 = tbl.FindMurderer()
-		local v10 = tbl.FindSheriff()
-		local str = "Murderer: " .. (v9 and v9.Name or "Unknown") .. " | Sheriff: " .. (v10 and v10.Name or "Unknown")
-
-		if textChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-			textChatService.TextChannels.RBXGeneral:SendAsync(str)
-		else
-			replicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(str, "Normal")
-		end
+		if announcingRoles then return end
+		announcingRoles = true
+		local success, message = pcall(function()
+			local messages = tbl.RoleMessages()
+			for index, text in ipairs(messages) do
+				if not tbl.Active then break end
+				if textChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+					textChatService.TextChannels.RBXGeneral:SendAsync(text)
+				else
+					replicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(text, "Normal")
+				end
+				if index < #messages then task.wait(1) end
+			end
+		end)
+		announcingRoles = false
+		if not success then warn("Coolwip Hub role announcement: " .. tostring(message)) end
 	end
 
 	fn3(userInputService.InputBegan:Connect(function(input, gameProcessedEvent)
@@ -41696,60 +41828,28 @@ if ok and result then
 	end
 
 	local connection3 = nil
-	local name = nil
-	local name2 = nil
-
-	tbl.ToggleRoleNotifications = function(arg)
-		if connection3 then
-			connection3:Disconnect()
-			connection3 = nil
-		end
-
-		if not arg then
-			name = nil
-			name2 = nil
-			return
-		end
-
+	local seenRoles = {Murderer = {}, Sheriff = {}}
+	tbl.ToggleRoleNotifications = function(enabled)
+		if connection3 then fn4(connection3); connection3 = nil end
+		if not enabled then seenRoles = {Murderer = {}, Sheriff = {}}; return end
 		connection3 = tbl.Every(0.25, function()
-			local v10 = tbl.GetTimer()
-
-			if not v10 or v10 <= 0 or v10 > 250 then
-				name = nil
-				name2 = nil
-				return
+			local timer = tbl.GetTimer()
+			if type(timer) == "number" and (timer <= 0 or timer > 250) then
+				seenRoles = {Murderer = {}, Sheriff = {}}; return
 			end
-
-			if tbl.Config.NotifyMurderer and not name then
-				local v11 = tbl.FindMurderer()
-
-				if v11 then
-					name = v11.Name
-
-					v:Notify({
-						Title = "<font color='rgb(255, 0, 0)'>Murderer Identified!</font>",
-						Content = "The player <font color='rgb(255, 0, 0)'><b>" .. v11.Name .. "</b></font> is the Murderer!",
-						Icon = "rbxthumb://type=AvatarHeadShot&id=" .. v11.UserId .. "&w=150&h=150",
-						IconSize = 45,
-						Duration = 8,
-					})
+			local snapshot = tbl.GetRoleSnapshot()
+			for _, role in ipairs({"Murderer", "Sheriff"}) do
+				local current, added = {}, {}
+				if tbl.Config["Notify" .. role] then
+					for _, player in ipairs(snapshot[role]) do
+						current[player] = true
+						if not seenRoles[role][player] then added[#added + 1] = player.Name end
+					end
+					if #added > 0 then
+						v:Notify({Title = role .. " Identified!", Content = table.concat(added, ", "), Icon = role == "Murderer" and "skull" or "shield", Duration = 8})
+					end
 				end
-			end
-
-			if tbl.Config.NotifySheriff and not name2 then
-				local v11 = tbl.FindSheriff()
-
-				if v11 then
-					name2 = v11.Name
-
-					v:Notify({
-						Title = "<font color='rgb(0, 0, 255)'>Sheriff Identified!</font>",
-						Content = "The player <font color='rgb(0, 0, 255)'><b>" .. v11.Name .. "</b></font> is the Sheriff!",
-						Icon = "rbxthumb://type=AvatarHeadShot&id=" .. v11.UserId .. "&w=150&h=150",
-						IconSize = 45,
-						Duration = 8,
-					})
-				end
+				seenRoles[role] = current
 			end
 		end)
 	end
@@ -41955,19 +42055,8 @@ if ok and result then
 					gameState = true
 				end
 
-				local v21 = tbl.FindMurderer()
-				local v22 = tbl.FindSheriff()
-				local str2 = "-"
-
-				if v21 then
-					str2 = "<font color='rgb(255, 0, 0)'>" .. v21.Name .. "</font>"
-				end
-
-				local str3 = "-"
-
-				if v22 then
-					str3 = "<font color='rgb(0, 0, 255)'>" .. v22.Name .. "</font>"
-				end
+				local str2 = "<font color='rgb(255, 90, 110)'>" .. tbl.RoleNames("Murderer", "-") .. "</font>"
+				local str3 = "<font color='rgb(100, 150, 255)'>" .. tbl.RoleNames("Sheriff", "-") .. "</font>"
 
 				gameState = gameState and "<font color='rgb(0, 255, 0)'>In Progress</font>" or "<font color='rgb(255, 255, 255)'>Intermission</font>"
 
@@ -42281,7 +42370,7 @@ if ok and result then
 		Flag = "NotifyMurdererToggle",
 		Callback = function(notifyMurderer)
 			tbl.Config.NotifyMurderer = notifyMurderer
-			tbl.ToggleRoleNotifications(true)
+			tbl.ToggleRoleNotifications(tbl.Config.NotifyMurderer or tbl.Config.NotifySheriff)
 		end,
 	})
 
@@ -42290,7 +42379,7 @@ if ok and result then
 		Flag = "NotifySheriffToggle",
 		Callback = function(notifySheriff)
 			tbl.Config.NotifySheriff = notifySheriff
-			tbl.ToggleRoleNotifications(true)
+			tbl.ToggleRoleNotifications(tbl.Config.NotifyMurderer or tbl.Config.NotifySheriff)
 		end,
 	})
 
@@ -42452,7 +42541,7 @@ if ok and result then
 	v29:Divider()
 
 	v29:Button({
-		Title = "Teleport to Murderer",
+		Title = "Teleport to Nearest Murderer",
 		Icon = "skull",
 		Callback = function()
 			local v32 = tbl.FindMurderer()
@@ -42464,7 +42553,7 @@ if ok and result then
 	})
 
 	v29:Button({
-		Title = "Teleport to Sheriff",
+		Title = "Teleport to Nearest Sheriff",
 		Icon = "shield",
 		Callback = function()
 			local v32 = tbl.FindSheriff()
@@ -42546,7 +42635,7 @@ if ok and result then
 	v33:Divider()
 
 	v33:Button({
-		Title = "Fling Murderer",
+		Title = "Fling Nearest Murderer",
 		Icon = "skull",
 		Callback = function()
 			local v36 = tbl.FindMurderer()
@@ -42558,7 +42647,7 @@ if ok and result then
 	})
 
 	v33:Button({
-		Title = "Fling Sheriff",
+		Title = "Fling Nearest Sheriff",
 		Icon = "shield",
 		Callback = function()
 			local v36 = tbl.FindSheriff()
