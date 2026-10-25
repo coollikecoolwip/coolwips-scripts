@@ -39644,7 +39644,6 @@ if ok and result then
 			BoxInnocent = false,
 			TracersInnocent = false,
 			SkeletonInnocent = false,
-			ESPGunDropped = false,
 			ESPColorInnocent = Color3.fromRGB(0, 255, 0),
 			ESPColorMurderer = Color3.fromRGB(255, 0, 0),
 			ESPColorSheriff = Color3.fromRGB(0, 0, 255),
@@ -40010,30 +40009,23 @@ if ok and result then
 		return cachedMap
 	end
 
+	function tbl.ParseTimer(value)
+		if type(value) == "number" then return value == value and value >= 0 and value < math.huge and math.floor(value) or nil end
+		if type(value) ~= "string" then return nil end
+		local minutes, seconds = value:match("(%d+):(%d%d)")
+		if minutes then return tonumber(minutes) * 60 + tonumber(seconds) end
+		minutes, seconds = value:match("(%d+)%s*m"), value:match("(%d+)%s*s")
+		if minutes or seconds then return (tonumber(minutes) or 0) * 60 + (tonumber(seconds) or 0) end
+		return tbl.ParseTimer(tonumber(value))
+	end
 	tbl.GetTimer = function()
-		local roundTimerPart = workspace_:FindFirstChild("RoundTimerPart")
-
-		if roundTimerPart then
-			local attribute = roundTimerPart:GetAttribute("Time")
-			if typeof(attribute) == "number" and attribute > 0 then
-				return attribute
-			end
-			local surfaceGui = roundTimerPart:FindFirstChild("SurfaceGui")
-
-			if surfaceGui and surfaceGui.Enabled then
-				local timer = surfaceGui:FindFirstChild("Timer")
-
-				if timer and timer.Text and timer.Text ~= "" then
-					local text = timer.Text
-					local v4 = string.match(text, "(%d+)m")
-					local v5 = string.match(text, "(%d+)s")
-					if v5 then
-						return (tonumber(v4) or 0) * 60 + (tonumber(v5) or 0)
-					end
-				end
-			end
+		local part = workspace_:FindFirstChild("RoundTimerPart")
+		if part then
+			local value = tbl.ParseTimer(part:GetAttribute("Time"))
+			if value ~= nil then return value end
+			local label = part:FindFirstChild("Timer", true)
+			if label and (label:IsA("TextLabel") or label:IsA("TextButton")) then return tbl.ParseTimer(label.Text) end
 		end
-
 		return nil
 	end
 
@@ -40623,7 +40615,7 @@ if ok and result then
 			elapsed = 0 -- Never catch up with multiple ESP passes after a slow frame.
 			local playerActive, needsDraw = options()
 			local gunStyle = tbl.ESPDetails.GunDrop
-			local gunOptions = {Highlight = tbl.Config.ESPGunDropped or gunStyle.Highlight, ShowName = tbl.Config.ESPGunDropped or gunStyle.Info, ShowDistance = tbl.Config.ESPGunDropped or gunStyle.Info}
+			local gunOptions = {Highlight = gunStyle.Highlight, ShowName = gunStyle.Info, ShowDistance = gunStyle.Info}
 			local gunActive = gunOptions.Highlight or (gunStyle.Tracers and drawingAvailable) or gunOptions.ShowName or gunOptions.ShowDistance
 			interval = (needsDraw or (gunStyle.Tracers and drawingAvailable)) and (1 / 30) or 0.1
 			if not playerActive and not gunActive then
@@ -41842,7 +41834,7 @@ if ok and result then
 		if not arg or arg == -1 then
 			return "00:00"
 		end
-		return string.format("%02d:%02d", math.floor(arg / 60), arg % 60)
+		return string.format("%02d:%02d", math.floor(arg / 60), math.floor(arg) % 60)
 	end
 
 	local function fn13()
@@ -41867,7 +41859,8 @@ if ok and result then
 		screenGui.Name = "CoolwipTimerGUI"
 		screenGui.ResetOnSpawn = false
 		screenGui.IgnoreGuiInset = true
-		screenGui.Parent = coreGui
+		screenGui.DisplayOrder = 100
+		screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 		local textLabel = Instance.new("TextLabel")
 		textLabel.Size = UDim2.fromOffset(200, 50)
 		textLabel.Position = UDim2.fromScale(0.5, 0.15)
@@ -41884,7 +41877,7 @@ if ok and result then
 		thread4 = task.spawn(function()
 			while tbl.Active and screenGui and screenGui.Parent do
 				local v10 = tbl.GetTimer()
-				textLabel.Text = v10 and fn12(v10)
+				textLabel.Text = v10 ~= nil and fn12(v10) or "Waiting for round timer"
 				task.wait(0.5)
 			end
 		end)
@@ -42333,7 +42326,7 @@ if ok and result then
 				end end
 			end
 			local original = container.Toggle
-			if type(original) == "function" then container.Toggle = function(self, config)
+			if container ~= v10 and type(original) == "function" then container.Toggle = function(self, config)
 				local callback, ready, previous = config.Callback, false, config.Value == true
 				config.Callback = function(value, ...)
 					if callback then callback(value, ...) end
@@ -42689,17 +42682,6 @@ if ok and result then
 		Flag = "RoundTimerToggle",
 		Value = tbl.Config.RoundTimer,
 		Callback = tbl.ToggleRoundTimer,
-	})
-
-	v25:Divider()
-
-	v25:Toggle({
-		Title = "Dropped Gun ESP",
-		Flag = "ESPGunDroppedToggle",
-		Value = tbl.Config.ESPGunDropped,
-		Callback = function(espGunDropped)
-			tbl.Config.ESPGunDropped = espGunDropped
-		end,
 	})
 
 	local v26 = v14:Section({ Title = "Alerts", Icon = "bell", Box = true, BoxBorder = true, Opened = true })
@@ -43315,15 +43297,14 @@ if ok and result then
 		end,
 	})
 
+	-- The keybind owns menu input; do not install a second Window.ToggleKey listener.
+	v10:SetToggleKey(nil)
 	v18:Section({ Title = "Interface Keybinds", Icon = "keyboard", Box = true, BoxBorder = true, Opened = true }):Keybind({
 		Title = "Menu Toggle Keybind",
+		Flag = "MenuToggleKeybind",
 		Value = "RightControl",
-		Callback = function(arg)
-			local flag2 = typeof(arg) == "EnumItem" and arg or Enum.KeyCode[arg]
-
-			if flag2 and v10 and v10.SetToggleKey then
-				v10:SetToggleKey(flag2)
-			end
+		Callback = function()
+			if tbl.Active and not v10.Destroyed then v10:Toggle() end
 		end,
 	})
 
@@ -44056,18 +44037,38 @@ if ok and result then
 		local function finishFling(session)
 			if not session or session.Finished then return end
 			session.Finished = true
-			if activeFling == session then activeFling = nil; tbl.IsFlinging = false end
+			local root = session.Root
+			local anchored = root.Anchored
+			local function sameCharacter() return localPlayer.Character == session.Character and session.Character.Parent and root.Parent end
+			local function clearVelocity()
+				for part in pairs(tbl.GetCachedParts(session.Character)) do
+					if part.Parent then part.AssemblyLinearVelocity = Vector3.zero; part.AssemblyAngularVelocity = Vector3.zero end
+				end
+			end
+			-- Hold the return position across physics steps before restoring collisions.
+			pcall(function()
+				if sameCharacter() then
+					root.Anchored = true
+					for _ = 1, 4 do
+						if not sameCharacter() then break end
+						clearVelocity()
+						session.Character:PivotTo(session.Origin)
+						runService.PostSimulation:Wait()
+					end
+					if sameCharacter() then clearVelocity(); session.Character:PivotTo(session.Origin) end
+				end
+			end)
 			for part, canCollide in pairs(session.Collisions) do
 				if part.Parent then pcall(function() part.CanCollide = not tbl.Config.Noclip and canCollide end) end
 			end
+			pcall(function() if root.Parent then root.Anchored = anchored end end)
 			pcall(function()
-				if session.Humanoid.Parent then session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, session.Seated) end
-				if session.Root.Parent then
-					session.Root.AssemblyLinearVelocity = Vector3.zero
-					session.Root.AssemblyAngularVelocity = Vector3.zero
-					if localPlayer.Character == session.Character and session.Character.Parent then session.Character:PivotTo(session.Origin) end
+				if session.Humanoid.Parent then
+					session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, session.Seated)
+					session.Humanoid.Sit = false; session.Humanoid.PlatformStand = false
 				end
 			end)
+			if activeFling == session then activeFling = nil; tbl.IsFlinging = false end
 		end
 		function tbl.StopFling()
 			batchGeneration += 1
@@ -44094,6 +44095,9 @@ if ok and result then
 				local deadline, step = os.clock() + settings.FlingDuration, 0
 				while tbl.Active and activeFling == session and os.clock() < deadline do
 					if localPlayer.Character ~= character or target.Character ~= targetCharacter or not root.Parent or not targetRoot.Parent or humanoid.Health <= 0 or targetHumanoid.Health <= 0 then break end
+					local voidY = workspace_.FallenPartsDestroyHeight
+					if voidY ~= voidY then voidY = -500 end
+					if targetRoot.Position.Y < math.max(voidY + 50, session.Origin.Position.Y - 150) then break end
 					step += 1
 					local angle = step * 1.7
 					local prediction = targetRoot.AssemblyLinearVelocity * 0.1
