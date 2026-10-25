@@ -39656,6 +39656,12 @@ if ok and result then
 
 	-- Shared discovery caches and bounded, cleanup-aware periodic checks.
 	tbl.Active = true
+	tbl.NewFeatures = {Cleanups = {}}
+	tbl.ESPDetails = {}
+	for _, role in ipairs({"Murderer", "Sheriff", "Hero", "Innocent", "GunDrop"}) do
+		tbl.ESPDetails[role] = {Fill = role == "GunDrop" and 0.4 or 0.85, Outline = 0, TracerOrigin = "Bottom", ShowName = false, ShowRole = false, ShowDistance = false, Color = Color3.fromRGB(0, 255, 255)}
+	end
+	tbl.Config.ESPColorHero = Color3.fromRGB(255, 210, 60)
 	tbl.PartCaches = {}
 	tbl.RoleCache = {}
 	do
@@ -40117,7 +40123,7 @@ if ok and result then
 	do
 		local aliases = {
 			murderer = "Murderer", murderers = "Murderer", infected = "Murderer", zombie = "Murderer",
-			sheriff = "Sheriff", sheriffs = "Sheriff", hero = "Sheriff", 
+			sheriff = "Sheriff", sheriffs = "Sheriff", hero = "Hero", 
 			innocent = "Innocent", innocents = "Innocent",
 		}
 		local function canonical(value)
@@ -40126,7 +40132,10 @@ if ok and result then
 		local watched = {}
 		tbl.PlayerDataCharacters = {}
 		tbl.RoleDataReceivedAt = -math.huge
-		function tbl.InvalidateRoles() table.clear(tbl.RoleCache) end
+		function tbl.InvalidateRoles()
+			table.clear(tbl.RoleCache)
+			tbl.RoleRevision = (tbl.RoleRevision or 0) + 1
+		end
 		local function disconnectAll(connections)
 			for _, connection in ipairs(connections) do fn4(connection) end
 			table.clear(connections)
@@ -40136,14 +40145,19 @@ if ok and result then
 		end
 		local function watchPlayer(player)
 			if watched[player] then return end
-			local state = {playerConnections = {}, characterConnections = {}, backpackConnections = {}, humanoidConnections = {}, trustPlayerAttribute = true, respawned = false}
+			local state = {playerConnections = {}, characterConnections = {}, backpackConnections = {}, humanoidConnections = {}, trustPlayerAttribute = true, trustCharacterAttribute = true, eliminated = false, respawned = false}
 			watched[player] = state
 			local function bindHumanoid(humanoid)
 				disconnectAll(state.humanoidConnections)
-				if humanoid then watch(humanoid.Died, tbl.InvalidateRoles, state.humanoidConnections) end
+				if humanoid then watch(humanoid.Died, function()
+					state.eliminated = true
+					state.trustPlayerAttribute, state.trustCharacterAttribute = false, false
+					tbl.PlayerDataCharacters[player] = false
+					tbl.InvalidateRoles()
+				end, state.humanoidConnections) end
 			end
 			local function equipmentChanged(child)
-				if child:IsA("Tool") and (child.Name == "Knife" or child.Name == "Gun") then tbl.InvalidateRoles() end
+				if child:IsA("Tool") then tbl.InvalidateRoles() end
 			end
 			local function bindBackpack(backpack)
 				disconnectAll(state.backpackConnections)
@@ -40157,11 +40171,14 @@ if ok and result then
 				disconnectAll(state.characterConnections)
 				bindHumanoid(nil)
 				if respawned then
-					state.respawned, state.trustPlayerAttribute = true, false
+					state.respawned, state.trustPlayerAttribute, state.trustCharacterAttribute = true, false, false
 					tbl.PlayerDataCharacters[player] = false
 				end
 				if character then
-					watch(character:GetAttributeChangedSignal("Role"), tbl.InvalidateRoles, state.characterConnections)
+					watch(character:GetAttributeChangedSignal("Role"), function()
+						state.trustCharacterAttribute, state.eliminated = true, false
+						tbl.InvalidateRoles()
+					end, state.characterConnections)
 					watch(character.ChildAdded, function(child)
 						equipmentChanged(child)
 						if child:IsA("Humanoid") then bindHumanoid(child); tbl.InvalidateRoles() end
@@ -40177,7 +40194,7 @@ if ok and result then
 			watch(player.CharacterAdded, function(character) bindCharacter(character, true) end, state.playerConnections)
 			watch(player.CharacterRemoving, function() bindCharacter(nil, true) end, state.playerConnections)
 			watch(player:GetAttributeChangedSignal("Role"), function()
-				state.trustPlayerAttribute = true
+				state.trustPlayerAttribute, state.eliminated = true, false
 				tbl.InvalidateRoles()
 			end, state.playerConnections)
 			watch(player.ChildAdded, function(child) if child:IsA("Backpack") then bindBackpack(child) end end, state.playerConnections)
@@ -40197,6 +40214,18 @@ if ok and result then
 			tbl.PlayerDataCharacters[player] = nil
 			tbl.InvalidateRoles()
 		end))
+		function tbl.BeginRoleRound()
+			for _, state in pairs(watched) do state.eliminated = false end
+			tbl.InvalidateRoles()
+		end
+		function tbl.EndRoleRound()
+			for player, state in pairs(watched) do
+				state.eliminated = true
+				state.trustPlayerAttribute, state.trustCharacterAttribute = false, false
+				tbl.PlayerDataCharacters[player] = false
+			end
+			tbl.InvalidateRoles()
+		end
 		function tbl.AcceptRoleData(data)
 			if type(data) ~= "table" then return end
 			tbl.PlayerData = data
@@ -40204,16 +40233,34 @@ if ok and result then
 			for _, player in ipairs(tbl.GetPlayersCached()) do tbl.PlayerDataCharacters[player] = player.Character or false end
 			tbl.InvalidateRoles()
 		end
+		local signatures = {
+			Gun = {"GunServer", "GunClient", "GunScript", "ClientGunScript", "GunVisuals"},
+			Knife = {"KnifeServer", "KnifeClient", "KnifeScript", "ClientKnifeScript", "KnifeVisuals"},
+		}
 		local function toolNamed(container, name)
-			local object = container and container:FindFirstChild(name)
-			return object and object:IsA("Tool") or false
+			if not container then return nil end
+			local object = container:FindFirstChild(name)
+			if object and object:IsA("Tool") then return object end
+			for _, child in ipairs(container:GetChildren()) do
+				if not child:IsA("Tool") then continue end
+				local lower = child.Name:lower()
+				if lower == name:lower() or (name == "Gun" and lower == "revolver") then return child end
+				for _, signature in ipairs(signatures[name] or {}) do
+					local marker = child:FindFirstChild(signature)
+					if marker and (marker:IsA("LocalScript") or marker:IsA("Script") or marker:IsA("ModuleScript")) then return child end
+				end
+			end
+			return nil
+		end
+		function tbl.GetWeaponTool(player, name)
+			return player and (toolNamed(player.Character, name) or toolNamed(player:FindFirstChild("Backpack"), name)) or nil
 		end
 
 		function tbl.GetRoleSnapshot(force)
 			local now = os.clock()
 			local cached = tbl.RoleCache.All
 			if not force and cached and now < cached.expires then return cached end
-			local snapshot = {Murderer = {}, Sheriff = {}, Innocent = {}, byPlayer = {}, expires = now + 0.15}
+			local snapshot = {Murderer = {}, Sheriff = {}, Hero = {}, Innocent = {}, byPlayer = {}, expires = now + 0.1}
 			for _, player in ipairs(tbl.GetPlayersCached()) do
 				local character = player.Character
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -40224,18 +40271,25 @@ if ok and result then
 				local dataCharacter = tbl.PlayerDataCharacters[player]
 				local sameLife = dataCharacter == character or (dataCharacter == nil and not (state and state.respawned))
 				local stored = sameLife and (type(entry) == "table" and (entry.Role or entry.role) or entry) or nil
-				local characterRole = canonical(character:GetAttribute("Role"))
+				-- Death remains authoritative even when a late snapshot repeats the old round role.
+				local reportedDead = type(entry) == "table" and (entry.Dead == true or entry.IsDead == true or entry.Eliminated == true)
+				if state and state.eliminated or sameLife and reportedDead then continue end
+				local characterRole = (not state or state.trustCharacterAttribute) and canonical(character:GetAttribute("Role")) or nil
 				local playerRole = (not state or state.trustPlayerAttribute) and canonical(player:GetAttribute("Role")) or nil
 				local dataRole = canonical(stored)
 				local role = characterRole or dataRole or playerRole
 				local backpack = player:FindFirstChild("Backpack")
 				local knife = toolNamed(character, "Knife") or toolNamed(backpack, "Knife")
 				local gun = toolNamed(character, "Gun") or toolNamed(backpack, "Gun")
-				local equipmentRole = knife and not gun and "Murderer" or gun and not knife and "Sheriff" or nil
+				local gunRole = (role == "Innocent" or role == "Hero") and "Hero" or "Sheriff"
+				local equipmentRole = knife and not gun and "Murderer" or gun and not knife and gunRole or nil
 				-- Fresh replicated metadata beats contradictory equipment. Older metadata
 				-- can be corrected by a real tool after conversions or gun pickups.
 				local freshData = dataRole and now - tbl.RoleDataReceivedAt < 1
 				if equipmentRole and not characterRole and not freshData then role = equipmentRole end
+				-- A confirmed Innocent who picks up a real gun is now the Hero, even
+				-- while the server's original-round Role attribute still says Innocent.
+				if gun and not knife and role == "Innocent" then role = "Hero" end
 				-- Two weapons with no explicit role are ambiguous: leave Unknown.
 
 				if role then
@@ -40243,7 +40297,7 @@ if ok and result then
 					table.insert(snapshot[role], player)
 				end
 			end
-			for _, role in ipairs({"Murderer", "Sheriff", "Innocent"}) do
+			for _, role in ipairs({"Murderer", "Sheriff", "Hero", "Innocent"}) do
 				table.sort(snapshot[role], function(a, b) return a.Name < b.Name end)
 			end
 			tbl.RoleCache.All = snapshot
@@ -40252,6 +40306,7 @@ if ok and result then
 		function tbl.GetRole(player) return tbl.GetRoleSnapshot().byPlayer[player] end
 		function tbl.FindMurderers() return tbl.GetRoleSnapshot().Murderer end
 		function tbl.FindSheriffs() return tbl.GetRoleSnapshot().Sheriff end
+		function tbl.FindHeroes() return tbl.GetRoleSnapshot().Hero end
 		function tbl.FindInnocent(player) return tbl.GetRole(player) == "Innocent" end
 		function tbl.RoleNames(role, empty)
 			local names = {}
@@ -40275,13 +40330,16 @@ if ok and result then
 		-- Compatibility for single-target controls; never select the local player.
 		function tbl.FindMurderer() return tbl.NearestRole("Murderer") end
 		function tbl.FindSheriff() return tbl.NearestRole("Sheriff") end
+		function tbl.FindHero() return tbl.NearestRole("Hero") end
 		function tbl.RoleMessages()
 			tbl.GetRoleSnapshot(true) -- Recheck immediately before announcing.
 			local combined = "Murderer: " .. tbl.RoleNames("Murderer") .. " | Sheriff: " .. tbl.RoleNames("Sheriff")
+			if #tbl.FindHeroes() > 0 then combined ..= " | Hero: " .. tbl.RoleNames("Hero") end
 			if #combined <= 180 then return {combined} end
 			local messages = {}
-			for _, role in ipairs({"Murderer", "Sheriff"}) do
-				local prefix = role == "Murderer" and "Murderer: " or "Sheriff: "
+			for _, role in ipairs({"Murderer", "Sheriff", "Hero"}) do
+				if role == "Hero" and #tbl.FindHeroes() == 0 then continue end
+				local prefix = role .. ": "
 				local line = prefix
 				for _, player in ipairs(tbl.GetRoleSnapshot()[role]) do
 					local item = (line == prefix and "" or ", ") .. player.Name
@@ -40314,11 +40372,67 @@ if ok and result then
 		if remote then attach(remote) end
 	end
 
+	-- Read the game's already-replicated round data during role selection as well as play.
+	do
+		local source, loading = nil, false
+		function tbl.RefreshReplicatedRoles()
+			if source and type(source.PlayerData) == "table" then tbl.AcceptRoleData(source.PlayerData) end
+			tbl.InvalidateRoles()
+		end
+		local function attach(module)
+			if source or loading or module.Name ~= "CurrentRoundClient" or not module:IsA("ModuleScript") then return end
+			if not module.Parent or module.Parent.Name ~= "Modules" then return end
+			loading = true
+			task.spawn(function()
+				local ok, result = pcall(require, module)
+				loading = false
+				if not tbl.Active or not ok or type(result) ~= "table" then return end
+				source = result
+				tbl.RefreshReplicatedRoles()
+				local changed = source.PlayerDataChanged
+				if changed then
+					local okSignal, signal = pcall(function() return changed.Event end)
+					if okSignal and signal then fn3(signal:Connect(tbl.RefreshReplicatedRoles)) end
+				end
+			end)
+		end
+		fn3(replicatedStorage.DescendantAdded:Connect(attach))
+		local modules = replicatedStorage:FindFirstChild("Modules")
+		local module = modules and modules:FindFirstChild("CurrentRoundClient")
+		if module then attach(module) end
+	end
+
+	-- Discover dropped guns on demand, then maintain the set from world events.
+	do
+		local known, cached, expires = nil, {}, 0
+		local function add(object)
+			if object.Name == "GunDrop" and object:IsA("BasePart") then known[object] = true; expires = 0; tbl.GunRevision = (tbl.GunRevision or 0) + 1 end
+		end
+		function tbl.FindGunDrops()
+			if not known then
+				known = {}
+				fn3(workspace_.DescendantAdded:Connect(add))
+				fn3(workspace_.DescendantRemoving:Connect(function(object)
+					if known[object] then known[object] = nil; expires = 0; tbl.GunRevision = (tbl.GunRevision or 0) + 1 end
+				end))
+				for _, object in ipairs(workspace_:GetDescendants()) do add(object) end
+			end
+			if os.clock() >= expires then
+				cached = {}
+				for object in pairs(known) do
+					if object.Parent then cached[#cached + 1] = object else known[object] = nil end
+				end
+				expires = os.clock() + 0.5
+			end
+			return cached
+		end
+	end
+
 	-- Lightweight ESP: cached discovery, lazy visuals, bounded update rates.
 	do
 		local records = {}
-		local gunRecord = nil
-		local roles = {"Murderer", "Sheriff", "Innocent"}
+		local gunRecords = {}
+		local roles = {"Murderer", "Sheriff", "Hero", "Innocent"}
 		local features = {"Highlight", "Info", "Box", "Tracers", "Skeleton"}
 		local r15 = {
 			{"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
@@ -40330,10 +40444,10 @@ if ok and result then
 		local r6 = {{"Head", "Torso"}, {"Torso", "Left Arm"}, {"Torso", "Right Arm"}, {"Torso", "Left Leg"}, {"Torso", "Right Leg"}}
 		local roleOptions = {}
 		local clock, nextDiscovery, nextGun, nextText, nextBones = 0, 0, 0, 0, 0
-		local elapsed, interval = 0, 0.1
+		local elapsed, interval, seenRoleRevision, seenGunRevision = 0, 0.1, -1, -1
 		local drawingAvailable = Drawing and type(Drawing.new) == "function"
 		local function set(object, key, value)
-			if object[key] ~= value then object[key] = value end
+			if object and object[key] ~= value then object[key] = value end
 		end
 		local function removeDrawing(record, key)
 			if record[key] then record[key]:Remove(); record[key] = nil end
@@ -40364,11 +40478,17 @@ if ok and result then
 		getgenv().ClearESP = function()
 			for _, record in pairs(records) do destroy(record) end
 			table.clear(records)
-			if gunRecord then destroy(gunRecord); gunRecord = nil end
+			for gun, record in pairs(gunRecords) do destroy(record); gunRecords[gun] = nil end
 			nextDiscovery, nextGun = 0, 0
 		end
 		local function drawing(kind)
-			local object = Drawing.new(kind)
+			if not drawingAvailable then return nil end
+			local success, object = pcall(Drawing.new, kind)
+			if not success or not object then
+				drawingAvailable = false
+				warn("Coolwip Hub: Drawing ESP unavailable; chams and name/info remain available.")
+				return nil
+			end
 			object.Visible = false
 			object.Thickness = 1
 			object.Transparency = 1
@@ -40376,7 +40496,7 @@ if ok and result then
 			if kind == "Square" then object.Filled = false end
 			return object
 		end
-		local function highlight(record, parent, color, isGun)
+		local function highlight(record, parent, color, isGun, style)
 			if not record.highlight then
 				local h = Instance.new("Highlight")
 				h.Name = isGun and "CoolwipGunHighlight" or "CoolwipHighlight"
@@ -40386,6 +40506,8 @@ if ok and result then
 				h.Parent = parent
 				record.highlight = h
 			end
+			set(record.highlight, "FillTransparency", style.Fill)
+			set(record.highlight, "OutlineTransparency", style.Outline)
 			set(record.highlight, "FillColor", color)
 			set(record.highlight, "OutlineColor", color)
 			set(record.highlight, "Enabled", true)
@@ -40394,7 +40516,7 @@ if ok and result then
 			if not record.info then
 				local gui = Instance.new("BillboardGui")
 				gui.Name = isGun and "CoolwipGunInfo" or "CoolwipInfoESP"
-				gui.Size = UDim2.fromOffset(isGun and 100 or 200, 50)
+				gui.Size = UDim2.fromOffset(isGun and 120 or 220, isGun and 50 or 66)
 				gui.StudsOffset = Vector3.new(0, isGun and 2 or 3.5, 0)
 				gui.AlwaysOnTop = true
 				local text = Instance.new("TextLabel")
@@ -40407,11 +40529,23 @@ if ok and result then
 				text.RichText = false
 				text.Parent = gui
 				gui.Parent = parent
-				record.info, record.label, record.distance = gui, text, nil
+				record.info, record.label, record.distance, record.text = gui, text, nil, nil
 			end
 			set(record.info, "Adornee", adorn)
 			set(record.info, "Enabled", true)
 			set(record.label, "TextColor3", color)
+		end
+		local function tracerOrigin(camera, position)
+			local size = camera.ViewportSize
+			return Vector2.new(size.X / 2, position == "Top" and 0 or position == "Center" and size.Y / 2 or size.Y)
+		end
+		local function updateLabel(record, name, role, position, cameraPosition, style)
+			local parts = {}
+			if style.ShowName then parts[#parts + 1] = name end
+			if style.ShowRole then parts[#parts + 1] = role end
+			if style.ShowDistance then parts[#parts + 1] = "[" .. math.floor((cameraPosition - position).Magnitude) .. "]" end
+			local text = table.concat(parts, "\n")
+			if record.text ~= text then record.text = text; record.label.Text = text end
 		end
 		local function options()
 			local active, needsDraw = false, false
@@ -40419,18 +40553,26 @@ if ok and result then
 				local o = roleOptions[role]
 				if not o then o = {}; roleOptions[role] = o end
 				o.active = false
+				local settingsRole = role == "Hero" and "Sheriff" or role
 				for _, feature in ipairs(features) do
-					o[feature] = tbl.Config[feature .. role] == true
+					o[feature] = tbl.Config[feature .. settingsRole] == true
+					if not drawingAvailable and (feature == "Box" or feature == "Tracers" or feature == "Skeleton") then o[feature] = false end
 					o.active = o.active or o[feature]
 				end
-				o.color = tbl.Config["ESPColor" .. role]
+				o.style = tbl.ESPDetails[settingsRole]
+				o.ShowName = o.Info
+				o.ShowDistance = o.Info
+				o.ShowRole = o.Info
+				o.Info = o.ShowName or o.ShowRole or o.ShowDistance
+				o.active = o.active or o.Info
+				o.color = tbl.Config["ESPColor" .. role] -- Shared switches, distinct role colors.
 				active = active or o.active
 				needsDraw = needsDraw or o.Box or o.Tracers or o.Skeleton
 			end
 			return active, needsDraw and drawingAvailable
 		end
 		local function refresh()
-			-- Role/part lookups happen four times a second, not every frame.
+			-- Refresh on role events, with a bounded ten-per-second fallback for streamed parts.
 			local roleSnapshot = tbl.GetRoleSnapshot()
 			for _, record in pairs(records) do record.keep = false end
 			for _, player in ipairs(tbl.GetPlayersCached()) do
@@ -40445,6 +40587,7 @@ if ok and result then
 				local humanoid = character:FindFirstChildOfClass("Humanoid")
 				if not (root and humanoid and humanoid.Health > 0) then continue end
 				if not record then record = {character = character}; records[player] = record end
+				if record.role ~= role then record.text = nil end
 				record.keep, record.role, record.root, record.humanoid = true, role, root, humanoid
 				record.head = character:FindFirstChild("Head")
 				if not o.Box then removeDrawing(record, "box") end
@@ -40453,6 +40596,7 @@ if ok and result then
 				if not o.Highlight and record.highlight then record.highlight:Destroy(); record.highlight = nil end
 				if not o.Info and record.info then record.info:Destroy(); record.info, record.label = nil, nil end
 				if o.Skeleton and drawingAvailable then
+					if record.rigType ~= humanoid.RigType then removeBones(record); record.rigType = humanoid.RigType end
 					if not record.bones then
 						record.bones, record.points = {}, {}
 						for _, names in ipairs(humanoid.RigType == Enum.HumanoidRigType.R15 and r15 or r6) do
@@ -40478,45 +40622,47 @@ if ok and result then
 			if elapsed < interval then return end
 			elapsed = 0 -- Never catch up with multiple ESP passes after a slow frame.
 			local playerActive, needsDraw = options()
-			local gunActive = tbl.Config.ESPGunDropped == true
-			interval = needsDraw and (1 / 30) or 0.1
+			local gunStyle = tbl.ESPDetails.GunDrop
+			local gunOptions = {Highlight = tbl.Config.ESPGunDropped or gunStyle.Highlight, ShowName = tbl.Config.ESPGunDropped or gunStyle.Info, ShowDistance = tbl.Config.ESPGunDropped or gunStyle.Info}
+			local gunActive = gunOptions.Highlight or (gunStyle.Tracers and drawingAvailable) or gunOptions.ShowName or gunOptions.ShowDistance
+			interval = (needsDraw or (gunStyle.Tracers and drawingAvailable)) and (1 / 30) or 0.1
 			if not playerActive and not gunActive then
-				if next(records) or gunRecord then getgenv().ClearESP() end
+				if next(records) or next(gunRecords) then getgenv().ClearESP() end
 				return
 			end
 			local camera = workspace_.CurrentCamera
 			if not camera then
 				for _, record in pairs(records) do hide(record) end
-				if gunRecord then hide(gunRecord) end
+				for _, record in pairs(gunRecords) do hide(record) end
 				return
 			end
-			if clock >= nextDiscovery then
-				nextDiscovery = clock + 0.25
+			if clock >= nextDiscovery or seenRoleRevision ~= (tbl.RoleRevision or 0) then
+				seenRoleRevision = tbl.RoleRevision or 0
+				nextDiscovery = clock + 0.1
 				if playerActive then refresh() else
 					for player, record in pairs(records) do destroy(record); records[player] = nil end
 				end
 			end
 			local updateText, updateBones = clock >= nextText, clock >= nextBones
-			if updateText then nextText = clock + 0.2 end
+			if updateText then nextText = clock + 0.1 end
 			if updateBones then nextBones = clock + (1 / 15) end
-			local cameraPosition = camera.CFrame.Position
-			local origin = needsDraw and Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y)
+			local ownRoot = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+			local distanceOrigin = ownRoot and ownRoot.Position or camera.CFrame.Position
+			local projectionScale = camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView or 70) / 2))
+			-- Tracer origin is selectable independently for each role.
 			for player, record in pairs(records) do
 				local o = roleOptions[record.role]
 				local root = record.root
 				if not (o.active and player.Character == record.character and root.Parent and record.humanoid.Health > 0) then hide(record); continue end
 				local screen, onScreen = camera:WorldToViewportPoint(root.Position)
 				if not onScreen or screen.Z <= 0.1 then hide(record); continue end
-				if o.Highlight then highlight(record, record.character, o.color, false)
+				if o.Highlight then highlight(record, record.character, o.color, false, o.style)
 				elseif record.highlight then set(record.highlight, "Enabled", false) end
 				if o.Info then
-					info(record, record.character, record.head or root, o.color, false)
-					if updateText or not record.distance then
-						local distance = math.floor((cameraPosition - root.Position).Magnitude)
-						if record.distance ~= distance then record.distance = distance; record.label.Text = player.Name .. "\n[" .. distance .. "]" end
-					end
+					info(record, record.character, (record.head and record.head.Parent and record.head) or root, o.color, false)
+					if updateText or record.text == nil then updateLabel(record, player.Name, record.role, root.Position, distanceOrigin, o) end
 				elseif record.info then set(record.info, "Enabled", false) end
-				local height = 2500 / screen.Z
+				local height = projectionScale * 5 / screen.Z
 				if o.Box and drawingAvailable then
 					if not record.box then record.box = drawing("Square") end
 					set(record.box, "Size", Vector2.new(height / 2, height))
@@ -40525,7 +40671,7 @@ if ok and result then
 				elseif record.box then set(record.box, "Visible", false) end
 				if o.Tracers and drawingAvailable then
 					if not record.tracer then record.tracer = drawing("Line") end
-					set(record.tracer, "From", origin)
+					set(record.tracer, "From", tracerOrigin(camera, o.style.TracerOrigin))
 					set(record.tracer, "To", Vector2.new(screen.X, screen.Y + height / 2))
 					set(record.tracer, "Color", o.color); set(record.tracer, "Visible", true)
 				elseif record.tracer then set(record.tracer, "Visible", false) end
@@ -40549,28 +40695,36 @@ if ok and result then
 				end
 			end
 			if not gunActive then
-				if gunRecord then destroy(gunRecord); gunRecord = nil end
+				for gun, record in pairs(gunRecords) do destroy(record); gunRecords[gun] = nil end
 				return
 			end
-			if clock >= nextGun then
+			if clock >= nextGun or seenGunRevision ~= (tbl.GunRevision or 0) then
+				seenGunRevision = tbl.GunRevision or 0
 				nextGun = clock + 0.5
-				local map = fn8()
-				local gun = map and map:FindFirstChild("GunDrop")
-				if gunRecord and gunRecord.root ~= gun then destroy(gunRecord); gunRecord = nil end
-				if not gunRecord and gun and gun:IsA("BasePart") then gunRecord = {root = gun} end
-			end
-			if gunRecord then
-				local gun = gunRecord.root
-				if not gun.Parent then destroy(gunRecord); gunRecord = nil; return end
-				local screen, onScreen = camera:WorldToViewportPoint(gun.Position)
-				if not onScreen or screen.Z <= 0.1 then hide(gunRecord); return end
-				local color = Color3.fromRGB(0, 255, 255)
-				highlight(gunRecord, gun, color, true)
-				info(gunRecord, gun, gun, color, true)
-				if updateText or not gunRecord.distance then
-					local distance = math.floor((cameraPosition - gun.Position).Magnitude)
-					if gunRecord.distance ~= distance then gunRecord.distance = distance; gunRecord.label.Text = "GUN\n[" .. distance .. "]" end
+				local keep = {}
+				for _, gun in ipairs(tbl.FindGunDrops()) do
+					keep[gun] = true
+					if not gunRecords[gun] then gunRecords[gun] = {root = gun} end
 				end
+				for gun, record in pairs(gunRecords) do if not keep[gun] then destroy(record); gunRecords[gun] = nil end end
+			end
+			for gun, record in pairs(gunRecords) do
+				if not gun.Parent then destroy(record); gunRecords[gun] = nil; continue end
+				local screen, onScreen = camera:WorldToViewportPoint(gun.Position)
+				if not onScreen or screen.Z <= 0.1 then hide(record); continue end
+				local color = gunStyle.Color
+				if gunOptions.Highlight then highlight(record, gun, color, true, gunStyle)
+				elseif record.highlight then record.highlight:Destroy(); record.highlight = nil end
+				if gunOptions.ShowName or gunOptions.ShowDistance then
+					info(record, gun, gun, color, true)
+					if updateText or record.text == nil then updateLabel(record, "GUN", "", gun.Position, distanceOrigin, gunOptions) end
+				elseif record.info then record.info:Destroy(); record.info, record.label, record.text = nil, nil, nil end
+				if gunStyle.Tracers and drawingAvailable then
+					if not record.tracer then record.tracer = drawing("Line") end
+					set(record.tracer, "From", tracerOrigin(camera, gunStyle.TracerOrigin))
+					set(record.tracer, "To", Vector2.new(screen.X, screen.Y))
+					set(record.tracer, "Color", color); set(record.tracer, "Visible", true)
+				else removeDrawing(record, "tracer") end
 			end
 		end))
 	end
@@ -41010,7 +41164,7 @@ if ok and result then
 	end
 
 	tbl.SetWalkSpeed = function(arg)
-		tbl.Config.WalkSpeed = math.clamp(arg, 16, 200)
+		tbl.Config.WalkSpeed = math.clamp(arg, 16, 500)
 
 		if tbl.Config.EnableWalkSpeed and tbl.Humanoid then
 			tbl.Humanoid.WalkSpeed = tbl.Config.WalkSpeed
@@ -41046,7 +41200,7 @@ if ok and result then
 	end
 
 	tbl.SetJumpPower = function(arg)
-		tbl.Config.JumpPower = math.clamp(arg, 50, 300)
+		tbl.Config.JumpPower = math.clamp(arg, 50, 500)
 
 		if tbl.Config.EnableJumpPower and tbl.Humanoid then
 			tbl.Humanoid.JumpPower = tbl.Config.JumpPower
@@ -41131,16 +41285,13 @@ if ok and result then
 		if not (rootPart and rootPart.Parent) then
 			return
 		end
-		local v8 = fn8()
-		if not v8 then
-			return
-		end
-		local gunDrop = v8:FindFirstChild("GunDrop")
-
-		if gunDrop and gunDrop:IsA("BasePart") then
-			if firetouchinterest then
-				firetouchinterest(gunDrop, rootPart, 1)
-				firetouchinterest(gunDrop, rootPart, 0)
+		if not firetouchinterest then return end
+		for _, gunDrop in ipairs(tbl.FindGunDrops()) do
+			if gunDrop.Parent then
+				pcall(function()
+					firetouchinterest(gunDrop, rootPart, 0)
+					firetouchinterest(gunDrop, rootPart, 1)
+				end)
 			end
 		end
 	end
@@ -41173,7 +41324,7 @@ if ok and result then
 			end
 
 			for _, player in ipairs(tbl.GetPlayersCached()) do
-				if player ~= localPlayer and fn2(player) then
+				if player ~= localPlayer and tbl.GetRole(player) ~= "Murderer" and fn2(player) then
 					local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
 
 					if humanoidRootPart then
@@ -41187,7 +41338,7 @@ if ok and result then
 			local tbl5 = {}
 
 			for _, player in ipairs(tbl.GetPlayersCached()) do
-				if player ~= localPlayer and fn2(player) then
+				if player ~= localPlayer and tbl.GetRole(player) ~= "Murderer" and fn2(player) then
 					table.insert(tbl5, player)
 				end
 			end
@@ -41265,7 +41416,7 @@ if ok and result then
 					end
 
 					for _, player in ipairs(tbl.GetPlayersCached()) do
-						if player ~= localPlayer and fn2(player) then
+						if player ~= localPlayer and tbl.GetRole(player) ~= "Murderer" and fn2(player) then
 							local humanoidRootPart2 = player.Character:FindFirstChild("HumanoidRootPart")
 
 							if humanoidRootPart2 and (humanoidRootPart2.Position - humanoidRootPart.Position).Magnitude <= tbl.Config.KnifeAuraRange then
@@ -41279,7 +41430,7 @@ if ok and result then
 					local tbl5 = {}
 
 					for _, player in ipairs(tbl.GetPlayersCached()) do
-						if player ~= localPlayer and fn2(player) then
+						if player ~= localPlayer and tbl.GetRole(player) ~= "Murderer" and fn2(player) then
 							local humanoidRootPart2 = player.Character:FindFirstChild("HumanoidRootPart")
 
 							if humanoidRootPart2 and (humanoidRootPart2.Position - humanoidRootPart.Position).Magnitude <= tbl.Config.KnifeAuraRange then
@@ -41355,7 +41506,7 @@ if ok and result then
 		local v9 = nil
 
 		for _, player in ipairs(tbl.GetPlayersCached()) do
-			if player ~= localPlayer and fn2(player) then
+			if player ~= localPlayer and tbl.GetRole(player) ~= "Murderer" and fn2(player) then
 				local humanoidRootPart = player.Character.HumanoidRootPart
 				local magnitude = (arg - humanoidRootPart.Position).Magnitude
 
@@ -41452,34 +41603,187 @@ if ok and result then
 		end
 	end
 
-	local announcingRoles = false
-	tbl.ChatRoles = function()
-		if announcingRoles then return end
-		announcingRoles = true
-		local success, message = pcall(function()
-			local messages = tbl.RoleMessages()
-			for index, text in ipairs(messages) do
-				if not tbl.Active then break end
-				if textChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-					textChatService.TextChannels.RBXGeneral:SendAsync(text)
-				else
-					replicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(text, "Normal")
+	-- Role announcements share one sender; private messages never fall back to public chat.
+	do
+		local busy, lastAttempt = false, -math.huge
+		local settings = {Auto = false, Private = false, Recipient = nil}
+		tbl.RoleChat = settings
+		function tbl.SetRoleRecipient(value)
+			if type(value) == "table" then value = value.UserId or value.Value or value.Title or value.Name or value[1] end
+			if type(value) == "table" then value = value.UserId or value.Title or value.Name end
+			for _, player in ipairs(players:GetPlayers()) do
+				if player ~= localPlayer and (value == player or value == player.UserId or tostring(value) == tostring(player.UserId) or type(value) == "string" and value:gsub("^@", ""):lower() == player.Name:lower()) then
+					settings.Recipient, settings.RecipientId = player, player.UserId
+					return player
 				end
-				if index < #messages then task.wait(1) end
 			end
+			return nil -- UI refreshes can emit an empty value; preserve a valid selection.
+		end
+		local function recipientPresent(recipient)
+			if not recipient then return false end
+			for _, player in ipairs(players:GetPlayers()) do if player.UserId == recipient.UserId then return true end end
+			return false
+		end
+		local function fail(message) error(message, 0) end
+		local function notify(message)
+			message = tostring(message):gsub('^.-:%d+: ', '')
+			v:Notify({Title = "Role announcement", Icon = "message-circle", Content = message, Duration = 6})
+		end
+		local function whisperChannel(recipient)
+			local channels = textChatService:FindFirstChild("TextChannels")
+			if not channels then error("Chat channels are unavailable.") end
+			local low, high = math.min(localPlayer.UserId, recipient.UserId), math.max(localPlayer.UserId, recipient.UserId)
+			local name = "RBXWhisper:" .. low .. "_" .. high
+			local function findChannel()
+				return channels:FindFirstChild(name) or channels:FindFirstChild("RBXWhisper:" .. high .. "_" .. low)
+			end
+			local channel = findChannel()
+			if not channel then
+				local command = textChatService:FindFirstChild("RBXWhisperCommand", true)
+				local general = channels:FindFirstChild("RBXGeneral")
+				if not command or not command.Enabled or not general then error("Open a whisper to @" .. recipient.Name .. " in chat first.") end
+				-- Only the command and username go through General, never the role message.
+				local alias = command.PrimaryAlias
+				if type(alias) ~= "string" or alias == "" then alias = "/w" end
+				general:SendAsync(alias .. " " .. recipient.Name)
+				for _ = 1, 50 do
+					if not tbl.Active or not recipientPresent(recipient) then return nil end
+					channel = findChannel()
+					if channel then break end
+					task.wait(0.1)
+				end
+			end
+			if not channel or not channel:IsA("TextChannel") then error("Private chat is unavailable for that player. No roles were sent.") end
+			-- The channel can replicate before its TextSources are ready to send.
+			for _ = 1, 50 do
+				local ownSource, targetSource
+				for _, source in ipairs(channel:GetChildren()) do
+					if source:IsA("TextSource") then
+						if source.UserId == localPlayer.UserId then ownSource = source end
+						if source.UserId == recipient.UserId then targetSource = source end
+					end
+				end
+				if ownSource and ownSource.CanSend and targetSource then return channel end
+				if not tbl.Active or not recipientPresent(recipient) then fail("Private recipient is no longer available.") end
+				task.wait(0.1)
+			end
+			fail("Roblox did not grant permission to send in this whisper. Open a whisper to @" .. recipient.Name .. " in chat and check your chat permissions.")
+			return channel
+		end
+		local function send(channel, text)
+			-- Sending is pending, not a rejection. Observe the server's final result.
+			local received = {}
+			local connection = fn3(textChatService.MessageReceived:Connect(function(message)
+				if message.MessageId then received[message.MessageId] = message end
+			end))
+			local ok, result = pcall(function() return channel:SendAsync(text) end)
+			if not ok then fn4(connection); fail(result) end
+			for _ = 1, 50 do
+				if result and result.MessageId and received[result.MessageId] then result = received[result.MessageId] end
+				if not result or result.Status ~= Enum.TextChatMessageStatus.Sending or not tbl.Active then break end
+				task.wait(0.1)
+			end
+			fn4(connection)
+			if not result then fail("Chat did not confirm sending. Check the in-game chat.") end
+			if result.Status == Enum.TextChatMessageStatus.Success then return end
+			local status = tostring(result.Status):match("([^%.]+)$")
+			local reasons = {
+				Sending = "Chat is still processing the message; delivery is not confirmed.",
+				InvalidPrivacySettings = "Roblox privacy settings prevent messaging this player.",
+				InvalidTextChannelPermissions = "Whisper permission is unavailable. Open a whisper to the chosen player in chat, then retry.",
+				Floodchecked = "Roblox asked you to wait before sending another message.",
+				TextFilterFailed = "Roblox could not filter the message. Try again shortly.",
+				ModerationTimeout = "Roblox has temporarily restricted chat for this account.",
+			}
+			fail(reasons[status] or ("Chat could not send the message (" .. tostring(status) .. ")."))
+		end
+		tbl.ChatRoles = function()
+			if busy or not tbl.Active or os.clock() - lastAttempt < 3 then return end
+			busy, lastAttempt = true, os.clock()
+			if settings.RecipientId then tbl.SetRoleRecipient(settings.RecipientId) end
+			local private, recipient = settings.Private, settings.Recipient
+			local success, message = pcall(function()
+				if private and (not recipient or recipient == localPlayer or not recipientPresent(recipient)) then error("Choose a player for private role announcements.") end
+				local modern = textChatService.ChatVersion == Enum.ChatVersion.TextChatService
+				local channel
+				if modern then
+					if private then channel = whisperChannel(recipient)
+					else channel = textChatService.TextChannels:FindFirstChild("RBXGeneral") end
+					if not channel then error("The selected chat channel is unavailable.") end
+				end
+				local messages = tbl.RoleMessages()
+				for index, text in ipairs(messages) do
+					if not tbl.Active or settings.Private ~= private or private and (settings.Recipient ~= recipient or not recipientPresent(recipient)) then break end
+					if modern then
+						send(channel, text)
+					else
+						replicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(text, private and ("To " .. recipient.Name) or "All")
+					end
+					if index < #messages then task.wait(1) end
+				end
+			end)
+			busy = false
+			if not success then
+				settings.Auto = false
+				if settings.AutoControl then settings.AutoControl:Set(false) end
+				notify(message)
+			end
+			return success
+		end
+		local roundActive, pending, roundNumber = false, nil, 0
+		local bound = setmetatable({}, {__mode = "k"})
+		local function startRound(playing)
+			if roundActive then
+				if playing then tbl.RoundState = "InRound" end
+				tbl.RefreshReplicatedRoles()
+				return
+			end
+			roundActive, roundNumber = true, roundNumber + 1
+			tbl.RoundState = playing and "InRound" or "RoleSelection"
+			tbl.BeginRoleRound()
+			tbl.RefreshReplicatedRoles()
+			pending = settings.Auto and {Round = roundNumber, At = os.clock() + 0.25, Deadline = os.clock() + 20} or nil
+		end
+		local function endRound()
+			roundActive, pending = false, nil
+			tbl.RoundState = "Ended"
+			tbl.EndRoleRound()
+		end
+		local starts = {RoundStart = true, SpecialRound = true}
+		local roles = {RoleSelect = true, ShowRoleSelect = true, ShowRoleSelectNew = true}
+		local ends = {GameOver = true, RoundEndFade = true, VictoryScreen = true}
+		local function bind(remote)
+			if bound[remote] or not remote:IsA("RemoteEvent") then return end
+			local gameplay = remote.Parent
+			if not gameplay or gameplay.Name ~= "Gameplay" or not gameplay.Parent or gameplay.Parent.Name ~= "Remotes" then return end
+			if starts[remote.Name] then
+				bound[remote] = true; fn3(remote.OnClientEvent:Connect(function() startRound(true) end))
+			elseif ends[remote.Name] then
+				bound[remote] = true; fn3(remote.OnClientEvent:Connect(endRound))
+			elseif roles[remote.Name] then
+				bound[remote] = true; fn3(remote.OnClientEvent:Connect(function()
+					startRound(false)
+				end))
+			end
+		end
+		fn3(replicatedStorage.DescendantAdded:Connect(bind))
+		local remotes = replicatedStorage:FindFirstChild("Remotes")
+		local gameplay = remotes and remotes:FindFirstChild("Gameplay")
+		if gameplay then for _, remote in ipairs(gameplay:GetChildren()) do bind(remote) end end
+		tbl.Every(0.5, function()
+			if not tbl.Active or not settings.Auto then pending = nil; return end
+			if not pending or not roundActive or os.clock() < pending.At then return end
+			local snapshot = tbl.GetRoleSnapshot(true)
+			if #snapshot.Murderer == 0 then
+				if os.clock() >= pending.Deadline then pending = nil; notify("Round roles were not available. Skipped this round's automatic announcement.") end
+				return
+			end
+			if busy or os.clock() - lastAttempt < 3 then return end
+			pending = nil -- Consume before sending so duplicate round events cannot resend.
+			tbl.ChatRoles()
 		end)
-		announcingRoles = false
-		if not success then warn("Coolwip Hub role announcement: " .. tostring(message)) end
 	end
 
-	fn3(userInputService.InputBegan:Connect(function(input, gameProcessedEvent)
-		if gameProcessedEvent or userInputService:GetFocusedTextBox() then
-			return
-		end
-		if input.KeyCode == Enum.KeyCode.M then
-			tbl.ChatRoles()
-		end
-	end))
 	local connection2 = nil
 
 	tbl.ToggleAntiAFK = function(arg)
@@ -41897,7 +42201,18 @@ if ok and result then
 	end
 
 	getgenv().CoolwipHub_Cleanup = function()
+		if not tbl.Active then return end
 		tbl.Active = false
+		for _, cleanup in ipairs(tbl.NewFeatures.Cleanups) do pcall(cleanup) end
+		table.clear(tbl.NewFeatures.Cleanups)
+		for _, entry in ipairs({
+			{"FlyEnabled", tbl.ToggleFly}, {"Invisible", tbl.ToggleInvisible},
+			{"Noclip", tbl.EnableNoclip}, {"EnableWalkSpeed", tbl.EnableWalkSpeed},
+			{"EnableJumpPower", tbl.EnableJumpPower}, {"AntiFling", tbl.ToggleAntiFling},
+			{"RoundTimer", tbl.ToggleRoundTimer},
+		}) do
+			if tbl.Config[entry[1]] then pcall(entry[2], false) end
+		end
 		if connection2 then connection2:Disconnect(); connection2 = nil end
 		if screenGui then screenGui:Destroy(); screenGui = nil end
 		for _, button in pairs(tbl.Buttons) do if typeof(button) == "Instance" then button:Destroy() end end
@@ -42005,9 +42320,42 @@ if ok and result then
 
 	tbl.Window = v10
 	v10:Tag({ Title = "0.1.8.1", Color = Color3.fromRGB(156, 35, 57) })
+	-- Wrap controls at creation so clicks, hotkeys and floating controls share feedback.
+	do
+		local wrapped = setmetatable({}, {__mode = "k"})
+		local function wrap(container)
+			if wrapped[container] then return container end
+			wrapped[container] = true
+			for _, method in ipairs({"Tab", "Section"}) do
+				local original = container[method]
+				if type(original) == "function" then container[method] = function(self, ...)
+					return wrap(original(self, ...))
+				end end
+			end
+			local original = container.Toggle
+			if type(original) == "function" then container.Toggle = function(self, config)
+				local callback, ready, previous = config.Callback, false, config.Value == true
+				config.Callback = function(value, ...)
+					if callback then callback(value, ...) end
+					local enabled = value == true
+					if ready and previous ~= enabled and tbl.Active then
+						v:Notify({Title = config.Title or "Feature", Content = enabled and "Enabled" or "Disabled", Icon = enabled and "check" or "x", Duration = 2})
+					end
+					previous = enabled
+				end
+				local control = original(self, config)
+				ready = true
+				return control
+			end end
+			return container
+		end
+		wrap(v10)
+	end
+
 	local v11 = v10:Tab({ Title = "Home", Icon = "house", Border = true })
 	local v12 = v10:Tab({ Title = "Movement", Icon = "footprints", Border = true })
 	local v13 = v10:Tab({ Title = "Combat", Icon = "swords", Border = true })
+	local aimTab = v10:Tab({ Title = "Aim Assist", Icon = "crosshair", Border = true })
 	local v14 = v10:Tab({ Title = "Visuals", Icon = "eye", Border = true })
 	local v15 = v10:Tab({ Title = "Teleports", Icon = "map-pin", Border = true })
 	local v16 = v10:Tab({ Title = "Misc", Icon = "sparkles", Border = true })
@@ -42062,6 +42410,7 @@ if ok and result then
 
 				local title = "Game State: " .. gameState
 				local desc = "<b>Timer:</b> " .. str .. "\n<b>Murderer:</b> " .. str2 .. "\n<b>Sheriff:</b> " .. str3
+				if #tbl.FindHeroes() > 0 then desc ..= "\n<b>Hero:</b> " .. tbl.RoleNames("Hero", "-") end
 				if v19.SetTitle and title ~= lastStatusTitle then lastStatusTitle = title; v19:SetTitle(title) end
 				if v19.SetDesc and desc ~= lastStatusDesc then lastStatusDesc = desc; v19:SetDesc(desc) end
 			end)
@@ -42070,7 +42419,7 @@ if ok and result then
 
 	v11:Divider()
 
-	v11:Paragraph({ Title = "Bundled WindUI", Desc = "WindUI and icons are included. External HTTP requests are disabled. M exposes roles." })
+	v11:Paragraph({ Title = "Bundled WindUI", Desc = "WindUI and icons are included. External HTTP requests are disabled. The Expose Roles keybind defaults to M and can be changed in Misc." })
 
 	local v20 = v12:Section({ Title = "Movement", Icon = "gauge", Box = true, BoxBorder = true, Opened = true })
 	v20:Toggle({ Title = "Walk Speed", Flag = "EnableWalkspeedToggle", Callback = tbl.EnableWalkSpeed })
@@ -42078,7 +42427,7 @@ if ok and result then
 	v20:Slider({
 		Title = "Walk Speed Value",
 		Flag = "WalkspeedSlider",
-		Value = { Min = 16, Max = 200, Default = tbl.Config.WalkSpeed },
+		Value = { Min = 16, Max = 500, Default = tbl.Config.WalkSpeed },
 		Callback = tbl.SetWalkSpeed,
 	})
 
@@ -42088,7 +42437,7 @@ if ok and result then
 	v20:Slider({
 		Title = "Jump Power Value",
 		Flag = "JumppowerSlider",
-		Value = { Min = 50, Max = 300, Default = tbl.Config.JumpPower },
+		Value = { Min = 50, Max = 500, Default = tbl.Config.JumpPower },
 		Callback = tbl.SetJumpPower,
 	})
 
@@ -42213,7 +42562,7 @@ if ok and result then
 		end,
 	})
 
-	local v23 = v14:Section({ Title = "Sheriff Visuals", Icon = "shield", Box = true, BoxBorder = true, Opened = true })
+	local v23 = v14:Section({ Title = "Sheriff & Hero Visuals", Icon = "shield", Box = true, BoxBorder = true, Opened = true })
 
 	v23:Colorpicker({
 		Title = "Sheriff ESP Color",
@@ -42227,7 +42576,7 @@ if ok and result then
 	v23:Divider()
 
 	v23:Toggle({
-		Title = "Sheriff Chams",
+		Title = "Sheriff & Hero Chams",
 		Flag = "HighlightSheriffToggle",
 		Value = tbl.Config.HighlightSheriff,
 		Callback = function(highlightSheriff)
@@ -42236,7 +42585,7 @@ if ok and result then
 	})
 
 	v23:Toggle({
-		Title = "Sheriff Name & Info",
+		Title = "Sheriff & Hero Name & Info",
 		Flag = "InfoSheriffToggle",
 		Value = tbl.Config.InfoSheriff,
 		Callback = function(infoSheriff)
@@ -42247,7 +42596,7 @@ if ok and result then
 	v23:Divider()
 
 	v23:Toggle({
-		Title = "Sheriff Box ESP",
+		Title = "Sheriff & Hero Box ESP",
 		Flag = "BoxSheriffToggle",
 		Value = tbl.Config.BoxSheriff,
 		Callback = function(boxSheriff)
@@ -42256,7 +42605,7 @@ if ok and result then
 	})
 
 	v23:Toggle({
-		Title = "Sheriff Tracers",
+		Title = "Sheriff & Hero Tracers",
 		Flag = "TracersSheriffToggle",
 		Value = tbl.Config.TracersSheriff,
 		Callback = function(tracersSheriff)
@@ -42265,7 +42614,7 @@ if ok and result then
 	})
 
 	v23:Toggle({
-		Title = "Sheriff Skeleton ESP",
+		Title = "Sheriff & Hero Skeleton ESP",
 		Flag = "SkeletonSheriffToggle",
 		Value = tbl.Config.SkeletonSheriff,
 		Callback = function(skeletonSheriff)
@@ -42389,55 +42738,8 @@ if ok and result then
 	v27:Keybind({ Title = "Grab Gun Keybind", Value = "G", Callback = tbl.GrabGun })
 	v27:Divider()
 
-	v27:Toggle({
-		Title = "Auto Shoot Murderer",
-		Flag = "AutoShootMurdererToggle",
-		Callback = function(arg)
-			tbl.ToggleAutoShootMurderer(arg)
-		end,
-	})
-
-	v27:Button({
-		Title = "Shoot Murderer",
-		Icon = "crosshair",
-		Callback = function()
-			tbl.ShootMurderer()
-		end,
-	})
-
-	v27:Keybind({
-		Title = "Shoot Murderer Keybind",
-		Value = "E",
-		Callback = function()
-			tbl.ShootMurderer()
-		end,
-	})
-
-	v27:Divider()
-
-	v27:Toggle({
-		Title = "Auto Wall Bang Murderer",
-		Flag = "AutoWallBangToggle",
-		Callback = function(arg)
-			tbl.ToggleWallBang(arg)
-		end,
-	})
-
-	v27:Button({
-		Title = "Wall Bang Murderer",
-		Icon = "crosshair",
-		Callback = function()
-			tbl.WallBangShoot()
-		end,
-	})
-
-	v27:Keybind({
-		Title = "Wall Bang Keybind",
-		Value = "B",
-		Callback = function()
-			tbl.WallBangShoot()
-		end,
-	})
+	v27:Keybind({Title = "Shoot Murderer Keybind", Value = "E", Callback = function() tbl.ShootMurderer() end})
+	v27:Keybind({Title = "Wall Bang Keybind", Value = "B", Callback = function() tbl.WallBangShoot() end})
 
 	local v28 = v13:Section({ Title = "Murderer", Icon = "skull", Box = true, BoxBorder = true, Opened = true })
 
@@ -42477,14 +42779,7 @@ if ok and result then
 
 	v28:Divider()
 
-	v28:Toggle({
-		Title = "Auto Silent Knife Throw",
-		Flag = "SilentThrowToggle",
-		Callback = tbl.ToggleSilentThrow,
-	})
-
-	v28:Button({ Title = "Silent Knife Throw", Icon = "zap", Callback = tbl.ExecuteSilentThrow })
-	v28:Keybind({ Title = "Silent Knife Throw Keybind", Value = "V", Callback = tbl.ExecuteSilentThrow })
+	v28:Keybind({Title = "Throw Knife Keybind", Value = "V", Callback = function() tbl.ExecuteSilentThrow() end})
 	local v29 = v15:Section({ Title = "Player Teleports", Icon = "users", Box = true, BoxBorder = true, Opened = true })
 	local v30 = nil
 
@@ -42624,11 +42919,7 @@ if ok and result then
 		Title = "Fling All Players",
 		Icon = "wind",
 		Callback = function()
-			for _, player in ipairs(tbl.GetPlayersCached()) do
-				if player ~= tbl.Player and player.Character then
-					tbl.FlingTarget(player)
-				end
-			end
+			tbl.FlingAllPlayers()
 		end,
 	})
 
@@ -42658,7 +42949,32 @@ if ok and result then
 		end,
 	})
 
-	v16:Section({ Title = "Chat", Icon = "message-circle", Box = true, BoxBorder = true, Opened = true }):Button({ Title = "Expose Roles in Chat (M)", Icon = "megaphone", Callback = tbl.ChatRoles })
+	local chatSection = v16:Section({ Title = "Expose Roles", Icon = "message-circle", Box = true, BoxBorder = true, Opened = true })
+	chatSection:Button({ Title = "Expose Roles Now", Desc = "Send current roles publicly, or only to your selected player when Private is enabled.", Icon = "megaphone", Callback = tbl.ChatRoles })
+	chatSection:Keybind({ Title = "Expose Roles Keybind", Flag = "ExposeRolesKeybind", Value = "M", Callback = function() if tbl.Active then tbl.ChatRoles() end end })
+	do
+		local settings = tbl.RoleChat
+		settings.AutoControl = chatSection:Toggle({Title = "Auto Expose Roles", Desc = "Announce once at the start of each new round, as soon as roles are assigned.", Icon = "check", Value = false, Callback = function(value) settings.Auto = value end})
+		chatSection:Toggle({Title = "Private Role Announcements", Desc = "Send only to the chosen player. Applies to the button, keybind, and automatic announcements.", Value = false, Callback = function(value) settings.Private = value end})
+		local recipientPicker
+		local function names(excluded)
+			local result = {}
+			for _, player in ipairs(players:GetPlayers()) do if player ~= localPlayer and player ~= excluded then result[#result + 1] = player.Name end end
+			table.sort(result)
+			return result
+		end
+		recipientPicker = chatSection:Dropdown({Title = "Private Recipient", Multi = false, AllowNone = false, SearchBarEnabled = true, Values = names(), Callback = function(name)
+			local before = settings.RecipientId
+			local player = tbl.SetRoleRecipient(name)
+			if player and player.UserId ~= before then v:Notify({Title = "Private Recipient", Content = "Selected @" .. player.Name, Icon = "user", Duration = 3}) end
+		end})
+		fn3(players.PlayerAdded:Connect(function() recipientPicker:Refresh(names()) end))
+		fn3(players.PlayerRemoving:Connect(function(player)
+			if settings.Recipient == player then settings.Recipient = nil; settings.RecipientId = nil; settings.Auto = false; settings.AutoControl:Set(false) end
+			recipientPicker:Refresh(names(player))
+		end))
+	end
+
 	local v36 = v16:Section({ Title = "Emotes & Animations", Icon = "smile", Box = true, BoxBorder = true, Opened = true })
 	local title = nil
 
@@ -42704,7 +43020,7 @@ if ok and result then
 		Title = "Display Shoot Button",
 		Flag = "show_shoot_button",
 		Callback = function(arg)
-			tbl.CreateGuiButton("Shoot", { Enabled = arg, Type = "Image", Icon = "rbxassetid://139650104834071" }, tbl.ShootMurderer)
+			tbl.CreateGuiButton("Shoot", { Enabled = arg, Type = "Image", Icon = "rbxassetid://139650104834071" }, function() tbl.ShootMurderer() end)
 		end,
 	})
 
@@ -42712,7 +43028,7 @@ if ok and result then
 		Title = "Display WallBang Button",
 		Flag = "show_wallbang_button",
 		Callback = function(arg)
-			tbl.CreateGuiButton("WallBang", { Enabled = arg, Type = "Text", Text = "WallBang" }, tbl.WallBangShoot)
+			tbl.CreateGuiButton("WallBang", { Enabled = arg, Type = "Text", Text = "WallBang" }, function() tbl.WallBangShoot() end)
 		end,
 	})
 
@@ -42736,7 +43052,7 @@ if ok and result then
 		Title = "Display Silent Throw Button",
 		Flag = "show_throw_knife_button",
 		Callback = function(arg)
-			tbl.CreateGuiButton("SilentThrow", { Enabled = arg, Type = "Text", Text = "Silent Throw" }, tbl.ExecuteSilentThrow)
+			tbl.CreateGuiButton("SilentThrow", { Enabled = arg, Type = "Text", Text = "Silent Throw" }, function() tbl.ExecuteSilentThrow() end)
 		end,
 	})
 
@@ -43058,6 +43374,1153 @@ if ok and result then
 			})
 		end,
 	})
+
+	-- Extra visual controls use the existing lightweight renderer.
+	do
+		local sections = {Murderer = v22, Sheriff = v23, Innocent = v24}
+		v23:Colorpicker({Title = "Hero ESP Color", Flag = "HeroESPColor", Default = tbl.Config.ESPColorHero, Callback = function(value) tbl.Config.ESPColorHero = value end})
+		for _, role in ipairs({"Murderer", "Sheriff", "Innocent"}) do
+			local section, settings = sections[role], tbl.ESPDetails[role]
+			section:Slider({Title = "Chams Fill Transparency", Flag = role .. "FillTransparency", Step = 0.01, Value = {Min = 0, Max = 1, Default = settings.Fill}, Callback = function(value) settings.Fill = value end})
+			section:Slider({Title = "Chams Outline Transparency", Flag = role .. "OutlineTransparency", Step = 0.01, Value = {Min = 0, Max = 1, Default = settings.Outline}, Callback = function(value) settings.Outline = value end})
+			section:Dropdown({Title = "Tracer Origin", Flag = role .. "TracerOrigin", Values = {"Bottom", "Top", "Center"}, Value = "Bottom", Callback = function(value) settings.TracerOrigin = value end})
+		end
+		local section = v14:Section({Title = "Gun Drop Visuals", Icon = "crosshair", Box = true, BoxBorder = true, Opened = true})
+		local settings = tbl.ESPDetails.GunDrop
+		section:Colorpicker({Title = "Gun Drop Color", Flag = "GunDropColor", Default = settings.Color, Callback = function(value) settings.Color = value end})
+		for _, item in ipairs({{"Highlight", "Gun Drop Chams"}, {"Info", "Gun Drop Name & Info"}, {"Tracers", "Gun Drop Tracers"}}) do
+			local key, title = item[1], item[2]
+			section:Toggle({Title = title, Flag = "DetailGunDrop" .. key, Value = false, Callback = function(value) settings[key] = value end})
+		end
+		section:Slider({Title = "Chams Fill Transparency", Flag = "GunDropFillTransparency", Step = 0.01, Value = {Min = 0, Max = 1, Default = settings.Fill}, Callback = function(value) settings.Fill = value end})
+		section:Slider({Title = "Chams Outline Transparency", Flag = "GunDropOutlineTransparency", Step = 0.01, Value = {Min = 0, Max = 1, Default = settings.Outline}, Callback = function(value) settings.Outline = value end})
+		section:Dropdown({Title = "Tracer Origin", Flag = "GunDropTracerOrigin", Values = {"Bottom", "Top", "Center"}, Value = "Bottom", Callback = function(value) settings.TracerOrigin = value end})
+	end
+
+
+	-- BEGIN_IMPORTED_FEATURES
+	-- Aim controls ported locally; shared role discovery remains the source of truth.
+	do
+		local aim = { Settings = {
+			TargetPart = "HumanoidRootPart", WallCheck = false, Smoothness = 0.5,
+			FOVEnabled = false, FOVRadius = 120, FOVColor = Color3.fromRGB(190, 35, 45),
+			FOVFilled = false, FOVTransparency = 0.7, PredictionEnabled = true,
+			AutoPing = false, ManualPing = 50, PingMultiplier = 1,
+			GunAutoEquip = false, GunSilentAim = false, GunAimLock = false,
+			GunAutoShoot = false, GunMethod = "Default", KnifeAutoEquip = false,
+			KnifeSilentAim = false, KnifeAimLock = false, KnifeMethod = "Default",
+			KnifeAutoThrow = false, KnifeAutoThrowDistance = 60, FastKnifeThrow = false,
+			KnifeSpeedMultiplier = 3, RangeIndicators = false,
+		} }
+		tbl.NewCombat = aim
+		local settings = aim.Settings
+		local stopped, circle, shotBusy, warnedUnsupported = false, nil, false, false
+		local connections, rings, taggedParts, wrappers, projectiles = {}, {}, {}, {}, {}
+		local targetCache, previewUntil = {}, {}
+		local nextShot, nextThrow, nextHookTry, nextPing = 0, 0, 0, 0
+		local ping = 0.05
+		local collection = game:GetService("CollectionService")
+		local insetService = game:GetService("GuiService")
+		local tagConnection, taggedMap, namecallState
+		local weaponMarkers = {
+			Gun = { "GunScript", "GunClient", "GunServer", "ClientGunScript", "GunVisuals" },
+			Knife = { "KnifeServer", "KnifeClient", "KnifeScript", "ClientKnifeScript", "KnifeVisuals" },
+		}
+		local function track(connection, alreadyTracked)
+			table.insert(connections, alreadyTracked and connection or fn3(connection))
+			return connection
+		end
+		local function alive(player)
+			local character = player and player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			return character and character.Parent and humanoid and humanoid.Health > 0
+		end
+		local function root(player)
+			local character = player and player.Character
+			return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Head"))
+		end
+		local function weapon(kind, equip)
+			if not alive(localPlayer) then return nil end
+			local character = localPlayer.Character
+			local markers = weaponMarkers[kind]
+			local function find(container)
+				if not container then return nil end
+				for _, child in ipairs(container:GetChildren()) do
+					if child:IsA("Tool") then
+						local name = child.Name:lower()
+						if name == kind:lower() or kind == "Gun" and name == "revolver" then return child end
+						for _, name in ipairs(markers) do
+							local marker = child:FindFirstChild(name)
+							if marker and (marker:IsA("LocalScript") or marker:IsA("Script") or marker:IsA("ModuleScript")) then return child end
+						end
+					end
+				end
+			end
+			local tool = tbl.GetWeaponTool and tbl.GetWeaponTool(localPlayer, kind) or find(character)
+			if not tool and equip then tool = find(localPlayer:FindFirstChildOfClass("Backpack")) end
+			if tool and tool:IsA("Tool") and tool.Parent ~= character and equip then character:FindFirstChildOfClass("Humanoid"):EquipTool(tool) end
+			return tool and tool.Parent == character and tool or nil
+		end
+		local function mousePoint()
+			local inset = insetService:GetGuiInset()
+			return userInputService:GetMouseLocation() - inset
+		end
+		function aim.Visible(part, character)
+			local camera = workspace_.CurrentCamera
+			if not camera or not part then return false end
+			local origin = camera.CFrame.Position
+			local excluded = { localPlayer.Character, camera }
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			for _ = 1, 5 do
+				params.FilterDescendantsInstances = excluded
+				local delta = part.Position - origin
+				if delta.Magnitude < 0.01 then return true end
+				local hit = workspace_:Raycast(origin, delta, params)
+				if not hit or hit.Instance == part or hit.Instance:IsDescendantOf(character) then return true end
+				local obstacle = hit.Instance
+				if obstacle:IsA("BasePart") and (not obstacle.CanCollide or obstacle.Transparency >= 0.9 or obstacle.LocalTransparencyModifier >= 0.9) then
+					table.insert(excluded, obstacle)
+					origin = hit.Position + delta.Unit * 0.01
+				else return false end
+			end
+			return false
+		end
+		function aim.Part(character)
+			if not character then return nil end
+			if settings.TargetPart == "Auto" then
+				for _, name in ipairs({ "Head", "UpperTorso", "HumanoidRootPart", "Torso" }) do
+					local part = character:FindFirstChild(name)
+					if part and part:IsA("BasePart") and aim.Visible(part, character) then return part end
+				end
+			end
+			local part = character:FindFirstChild(settings.TargetPart)
+			if part and part:IsA("BasePart") then return part end
+			return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Head")
+		end
+		function aim.Predict(part)
+			if not part then return nil end
+			if not settings.PredictionEnabled then return part.Position end
+			local time = math.clamp(((settings.AutoPing and ping) or settings.ManualPing / 1000) * settings.PingMultiplier + 0.04, 0, 1)
+			local humanoid = part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")
+			local velocity = part.AssemblyLinearVelocity
+			if humanoid and velocity.Magnitude < 0.1 and humanoid.MoveDirection.Magnitude > 0 then velocity = humanoid.MoveDirection * humanoid.WalkSpeed end
+			local predicted = part.Position + velocity * time
+			if humanoid and humanoid.FloorMaterial == Enum.Material.Air then predicted += Vector3.new(0, -0.5 * workspace_.Gravity * time * time, 0) end
+			return predicted
+		end
+		local function eligible(kind, player, snapshot)
+			if player == localPlayer or not alive(player) then return false end
+			local role = snapshot.byPlayer[player]
+			if kind == "Gun" then return role == "Murderer" end
+			return role == "Sheriff" or role == "Hero" or role == "Innocent"
+		end
+		function aim.Target(kind, force, maxDistance, combat)
+			local now = os.clock()
+			local snapshot = tbl.GetRoleSnapshot()
+			local cacheKey = kind .. (combat and "Combat" or "Assist")
+			local cached = targetCache[cacheKey]
+			if not force and not maxDistance and cached and cached.snapshot == snapshot and now < cached.untilTime and (not cached.player or eligible(kind, cached.player, snapshot)) and (not cached.part or cached.part.Parent == cached.player.Character) then
+				return cached.player, cached.part, cached.part and aim.Predict(cached.part)
+			end
+			local myRoot, camera = root(localPlayer), workspace_.CurrentCamera
+			if not myRoot or not camera then return nil end
+			local mouse = not combat and settings.FOVEnabled and mousePoint()
+			local bestPlayer, bestPart, bestScore, bestPriority = nil, nil, math.huge, math.huge
+			for _, player in ipairs(tbl.GetPlayersCached()) do
+				if eligible(kind, player, snapshot) then
+					local part = aim.Part(player.Character)
+					if part then
+						local score = (part.Position - myRoot.Position).Magnitude
+						local allowed = not maxDistance or score <= maxDistance
+						if mouse then
+							local screen, onScreen = camera:WorldToViewportPoint(part.Position)
+							score = (Vector2.new(screen.X, screen.Y) - mouse).Magnitude
+							allowed = allowed and onScreen and score <= settings.FOVRadius
+							end
+						local role = snapshot.byPlayer[player]
+						local priority = kind == "Knife" and role == "Innocent" and 2 or 1
+						if allowed and (combat or not settings.WallCheck or aim.Visible(part, player.Character)) and (priority < bestPriority or priority == bestPriority and score < bestScore) then
+							bestPlayer, bestPart, bestScore, bestPriority = player, part, score, priority
+						end
+					end
+				end
+			end
+			if not maxDistance then targetCache[cacheKey] = { player = bestPlayer, part = bestPart, snapshot = snapshot, untilTime = now + 0.1 } end
+			return bestPlayer, bestPart, bestPart and aim.Predict(bestPart)
+		end
+		function aim.Frames(kind, position, origin)
+			local method = settings[kind .. "Method"]
+			if method == "WallBang" then
+				local delta = position - origin.Position
+				local direction = delta.Magnitude > 0.001 and delta.Unit or Vector3.new(0, 0, -1)
+				return CFrame.lookAt(position - direction * 1.5, position), CFrame.new(position)
+			end
+			if kind == "Knife" and settings.FastKnifeThrow then
+				local delta = position - origin.Position
+				if delta.Magnitude > 1 then origin = CFrame.lookAt(position - delta.Unit * math.clamp(delta.Magnitude / settings.KnifeSpeedMultiplier, 0.5, delta.Magnitude), position) end
+			end
+			return origin, CFrame.new(position)
+		end
+		local function remote(tool, name)
+			local events = tool and tool:FindFirstChild("Events")
+			return tool and (tool:FindFirstChild(name) or events and events:FindFirstChild(name))
+		end
+		function aim.Shoot(manual)
+			if stopped or not tbl.Active or os.clock() < nextShot or shotBusy then return false end
+			local gun = weapon("Gun", manual or settings.GunAutoEquip)
+			local player, _, position = aim.Target("Gun", true, nil, true)
+			local myRoot = root(localPlayer)
+			if not gun or not player or not position or not myRoot then return false end
+			local shoot = remote(gun, "Shoot")
+			if shoot and shoot:IsA("RemoteEvent") then
+				nextShot = os.clock() + 0.25
+				local attachment = myRoot:FindFirstChild("GunRaycastAttachment")
+				local origin = attachment and attachment.WorldCFrame or myRoot.CFrame
+				local from, to = aim.Frames("Gun", position, origin)
+				shoot:FireServer(from, to)
+				return true
+			end
+			local legacy = gun:FindFirstChild("KnifeLocal")
+			legacy = legacy and legacy:FindFirstChild("CreateBeam")
+			legacy = legacy and legacy:FindFirstChild("RemoteFunction")
+			if legacy and legacy:IsA("RemoteFunction") then
+				nextShot, shotBusy = os.clock() + 0.25, true
+				task.spawn(function() pcall(function() if tbl.Active and not stopped then legacy:InvokeServer(1, position, "AH2") end end); shotBusy = false end)
+				return true
+			end
+			return false
+		end
+		function aim.Throw(manual)
+			if stopped or not tbl.Active or os.clock() < nextThrow then return false end
+			local knife = weapon("Knife", manual or settings.KnifeAutoEquip)
+			local player, _, position = aim.Target("Knife", true, not manual and settings.KnifeAutoThrowDistance or nil, true)
+			local myRoot = root(localPlayer)
+			if not knife or not myRoot then return false end
+			local handle = knife:FindFirstChild("Handle")
+			if not handle or not handle:IsA("BasePart") then return false end
+			if not position and manual then
+				local camera = workspace_.CurrentCamera
+				position = camera and camera.CFrame.Position + camera.CFrame.LookVector * 100 or handle.Position + handle.CFrame.LookVector * 100
+			end
+			if not position or not manual and (not player or (position - myRoot.Position).Magnitude > settings.KnifeAutoThrowDistance) then return false end
+			local thrown = remote(knife, "KnifeThrown")
+			if not thrown or not thrown:IsA("RemoteEvent") then return false end
+			nextThrow = os.clock() + 1.5
+			local from, to = aim.Frames("Knife", position, handle.CFrame)
+			thrown:FireServer(from, to)
+			return true
+		end
+		local function wantsHooks()
+			return settings.GunSilentAim or settings.KnifeSilentAim or settings.GunMethod == "WallBang" or settings.KnifeMethod == "WallBang" or settings.FastKnifeThrow
+		end
+		local function silentPosition()
+			local kind = settings.GunSilentAim and weapon("Gun", false) and "Gun" or settings.KnifeSilentAim and weapon("Knife", false) and "Knife"
+			if kind then local _, _, position = aim.Target(kind); return position end
+		end
+		local function rewriteNamecall(object, args)
+			if stopped or not tbl.Active or not wantsHooks() or typeof(object) ~= "Instance" then return nil end
+			local kind = object.Name == "Shoot" and "Gun" or object.Name == "KnifeThrown" and "Knife"
+			if not kind then return nil end
+			local tool = weapon(kind, false)
+			if not tool or not object:IsDescendantOf(tool) or typeof(args[1]) ~= "CFrame" then return nil end
+			local position = typeof(args[2]) == "CFrame" and args[2].Position or typeof(args[2]) == "Vector3" and args[2]
+			if settings[kind .. "SilentAim"] then local _, _, target = aim.Target(kind); position = target or position end
+			if position then args[1], args[2] = aim.Frames(kind, position, args[1]); return args end
+			return nil
+		end
+		function aim.InstallHooks()
+			if not wantsHooks() or stopped then
+				if namecallState and namecallState.handler == rewriteNamecall then namecallState.handler = nil end
+				return
+			end
+			local services = replicatedStorage:FindFirstChild("ClientServices")
+			local module = services and services:FindFirstChild("WeaponService")
+			if module and module:IsA("ModuleScript") and not wrappers[module] then
+				local success, service = pcall(require, module)
+				if success and type(service) == "table" then
+					local saved = { service = service }
+					for _, key in ipairs({ "GetMouseTargetCFrame", "GetTargetPosition" }) do
+						local original = service[key]
+						if type(original) == "function" then
+							local wrapper = function(self, ...)
+								if not stopped and tbl.Active then local position = silentPosition(); if position then return CFrame.new(position) end end
+								return original(self, ...)
+							end
+							saved[key] = { original = original, wrapper = wrapper }
+							service[key] = wrapper
+						end
+					end
+					if saved.GetMouseTargetCFrame or saved.GetTargetPosition then wrappers[module] = saved end
+				end
+			end
+			if not namecallState and type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" and type(checkcaller) == "function" then
+				-- One dispatcher survives reloads; unload clears its handler, so hooks never accumulate.
+				local environment = getgenv()
+				local state = environment.CoolwipHub_AimNamecallDispatch
+				if type(state) ~= "table" or state.version ~= 1 or type(state.original) ~= "function" then
+					state = { version = 1 }
+					local function dispatch(object, ...)
+						local handler = state.handler
+						if not handler then return state.original(object, ...) end
+						local method = getnamecallmethod()
+						if method == "FireServer" and not checkcaller() then
+							local success, args = pcall(handler, object, table.pack(...))
+							if success and args then
+								if type(setnamecallmethod) == "function" then setnamecallmethod(method) end
+								return state.original(object, table.unpack(args, 1, args.n))
+							end
+						end
+						if type(setnamecallmethod) == "function" then setnamecallmethod(method) end
+						return state.original(object, ...)
+					end
+					local success, result = pcall(hookmetamethod, game, "__namecall", type(newcclosure) == "function" and newcclosure(dispatch) or dispatch)
+					if success and type(result) == "function" then state.original = result; environment.CoolwipHub_AimNamecallDispatch = state else state = nil end
+				end
+				namecallState = state
+			end
+			if namecallState then namecallState.handler = rewriteNamecall end
+			if (settings.GunSilentAim or settings.KnifeSilentAim) and not namecallState and next(wrappers) == nil and not warnedUnsupported then
+				warnedUnsupported = true
+				v:Notify({ Title = "Silent Aim Unavailable", Content = "This executor or game version does not expose the required weapon hooks.", Icon = "info" })
+			end
+		end
+		local function clearTags()
+			if tagConnection then fn4(tagConnection); tagConnection = nil end
+			for part in pairs(taggedParts) do pcall(function() if part.Parent then collection:RemoveTag(part, "WeaponPassthrough") end end) end
+			table.clear(taggedParts)
+			taggedMap = nil
+		end
+		function aim.UpdatePassthrough()
+			local map = (settings.GunMethod == "WallBang" or settings.KnifeMethod == "WallBang") and fn8() or nil
+			if map == taggedMap then return end
+			clearTags()
+			if not map then return end
+			taggedMap = map
+			local function add(part)
+				if part:IsA("BasePart") and part.CanCollide and not collection:HasTag(part, "WeaponPassthrough") and not (localPlayer.Character and part:IsDescendantOf(localPlayer.Character)) then
+					collection:AddTag(part, "WeaponPassthrough"); taggedParts[part] = true
+				end
+			end
+			for _, part in ipairs(map:GetDescendants()) do add(part) end
+			tagConnection = fn3(map.DescendantAdded:Connect(add))
+		end
+		function aim.Cleanup()
+			if stopped then return end
+			stopped = true
+			for _, connection in ipairs(connections) do fn4(connection) end
+			clearTags()
+			if circle then pcall(function() circle.Visible = false; circle:Remove() end); circle = nil end
+			for _, ring in pairs(rings) do ring:Destroy() end
+			for _, saved in pairs(wrappers) do
+				for _, key in ipairs({ "GetMouseTargetCFrame", "GetTargetPosition" }) do
+					local entry = saved[key]
+					if entry and saved.service[key] == entry.wrapper then saved.service[key] = entry.original end
+				end
+			end
+			if namecallState and namecallState.handler == rewriteNamecall then namecallState.handler = nil end
+			for projectile, value in pairs(projectiles) do if projectile.Parent then pcall(function() projectile:SetAttribute("ThrowSpeed", value.originalSpeed) end) end end
+			table.clear(projectiles)
+		end
+		table.insert(tbl.NewFeatures.Cleanups, aim.Cleanup)
+		local function hasActivity()
+			return settings.GunAutoEquip or settings.KnifeAutoEquip or settings.GunAimLock or settings.KnifeAimLock or settings.GunAutoShoot or settings.KnifeAutoThrow or wantsHooks()
+		end
+		track(tbl.Every(0.1, function()
+			if stopped or not hasActivity() then return end
+			local now = os.clock()
+			if settings.AutoPing and now >= nextPing then
+				nextPing = now + 1
+				pcall(function() local items = stats.Network:FindFirstChild("ServerStatsItem"); local item = items and items:FindFirstChild("Data Ping"); if item then ping = math.clamp(item:GetValue() / 1000, 0, 1) end end)
+			end
+			if now >= nextHookTry then nextHookTry = now + 2; aim.InstallHooks(); aim.UpdatePassthrough() end
+			if settings.GunAutoEquip and not weapon("Knife", false) then weapon("Gun", true) end
+			if settings.KnifeAutoEquip and not weapon("Gun", false) then weapon("Knife", true) end
+			if settings.GunAutoShoot and not tbl.Config.AutoShootMurderer and not tbl.Config.AutoWallBangEnabled then aim.Shoot(false) end
+			if settings.KnifeAutoThrow and not tbl.Config.SilentThrow then aim.Throw(false) end
+		end), true)
+		-- Range previews and the FOV circle are lazy and draw at no more than 30 Hz.
+		local elapsed = 0
+		track(runService.RenderStepped:Connect(function(deltaTime)
+			if stopped or not tbl.Active then return end
+			if not settings.FOVEnabled and not settings.GunAimLock and not settings.KnifeAimLock and not settings.RangeIndicators then return end
+			elapsed += deltaTime
+			if elapsed < 1 / 30 then return end
+			local dt = math.min(elapsed, 0.1); elapsed = 0
+			if settings.FOVEnabled and not circle and Drawing and type(Drawing.new) == "function" then local success, value = pcall(Drawing.new, "Circle"); if success then circle = value; circle.NumSides = 48; circle.Thickness = 1.5 end end
+			if circle then
+				circle.Visible = settings.FOVEnabled
+				if settings.FOVEnabled then circle.Position = userInputService:GetMouseLocation(); circle.Radius = settings.FOVRadius; circle.Color = settings.FOVColor; circle.Filled = settings.FOVFilled; circle.Transparency = settings.FOVTransparency end
+			end
+			local kind = settings.GunAimLock and weapon("Gun", false) and "Gun" or settings.KnifeAimLock and weapon("Knife", false) and "Knife"
+			if kind and not userInputService:GetFocusedTextBox() then
+				local _, _, position = aim.Target(kind)
+				local camera = workspace_.CurrentCamera
+				if position and camera then camera.CFrame = camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position, position), 1 - (1 - settings.Smoothness) ^ (dt * 60)) end
+			end
+			local now, myRoot = os.clock(), root(localPlayer)
+			for _, key in ipairs({ "KnifeAura", "KnifeAutoThrow" }) do
+				local enabled = settings.RangeIndicators and (key == "KnifeAura" and tbl.Config.KnifeAura or key == "KnifeAutoThrow" and settings.KnifeAutoThrow or now < (previewUntil[key] or 0))
+				if enabled and myRoot and not rings[key] then
+					local success, ring = pcall(Instance.new, "CylinderHandleAdornment")
+					if success then ring.Name = "CoolwipHub_" .. key .. "Range"; ring.Height = 0.05; ring.AlwaysOnTop = true; ring.Color3 = settings.FOVColor; ring.Transparency = 0.45; ring.Parent = workspace_.CurrentCamera or workspace_; rings[key] = ring end
+				end
+				local ring = rings[key]
+				if ring then
+					ring.Visible = enabled and myRoot ~= nil
+					if ring.Visible then local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid"); ring.Adornee = myRoot; ring.CFrame = CFrame.new(0, -(humanoid and humanoid.HipHeight or 2) - 0.9, 0) * CFrame.Angles(math.pi / 2, 0, 0); ring.Radius = key == "KnifeAura" and tbl.Config.KnifeAuraRange or settings.KnifeAutoThrowDistance; ring.InnerRadius = math.max(0, ring.Radius - 0.4) end
+				end
+			end
+		end))
+		track(workspace_.ChildAdded:Connect(function(projectile)
+			if stopped or not settings.FastKnifeThrow or projectile.Name ~= "ThrowingKnife" then return end
+			-- Only adjust explicitly attributed local projectiles; other players' knives are untouched.
+			local owner = projectile:GetAttribute("Owner") or projectile:GetAttribute("Player") or projectile:GetAttribute("UserId")
+			if owner ~= localPlayer.Name and owner ~= localPlayer.UserId and owner ~= tostring(localPlayer.UserId) then return end
+			local blade = projectile:FindFirstChild("BladePosition")
+			local direction = projectile:GetAttribute("Direction")
+			if not blade or not blade:IsA("BasePart") or typeof(direction) ~= "Vector3" then return end
+			projectiles[projectile] = { blade = blade, originalSpeed = projectile:GetAttribute("ThrowSpeed"), expires = os.clock() + 5 }
+		end))
+		track(tbl.Every(1 / 30, function()
+			if stopped then return end
+			for projectile, data in pairs(projectiles) do
+				if not settings.FastKnifeThrow or not projectile.Parent or not data.blade.Parent or os.clock() > data.expires then
+					if projectile.Parent then projectile:SetAttribute("ThrowSpeed", data.originalSpeed) end
+					projectiles[projectile] = nil
+				else
+					local direction = projectile:GetAttribute("Direction")
+					if typeof(direction) == "Vector3" then data.blade.CFrame += direction * 96 * (settings.KnifeSpeedMultiplier - 1) / 30 end
+				end
+			end
+		end), true)
+		-- Buttons, hotkeys and floating actions all use the same aim settings and cooldowns.
+		tbl.ShootMurderer = function() return aim.Shoot(true) end
+		tbl.ExecuteSilentThrow = function() return aim.Throw(true) end
+		tbl.WallBangShoot = function()
+			local previous = settings.GunMethod
+			settings.GunMethod = "WallBang"
+			local success, result = pcall(aim.Shoot, true)
+			settings.GunMethod = previous
+			if not success then warn("Coolwip Hub shot: " .. tostring(result)); return false end
+			return result
+		end
+		local tab = aimTab -- Created directly after Combat in the main tab list.
+		local function section(title, icon, parent) return (parent or tab):Section({ Title = title, Icon = icon, Box = true, BoxBorder = true, Opened = true }) end
+		local function changed(key, value)
+			settings[key] = value
+			table.clear(targetCache)
+			if key == "FOVEnabled" and not value and circle then circle.Visible = false end
+			if key == "RangeIndicators" and not value then for _, ring in pairs(rings) do ring.Visible = false end end
+			if key == "KnifeAutoThrowDistance" then previewUntil.KnifeAutoThrow = os.clock() + 2 end
+			if key == "GunMethod" or key == "KnifeMethod" then aim.UpdatePassthrough() end
+			aim.InstallHooks()
+		end
+		local function toggle(group, key, title) group:Toggle({ Title = title, Flag = "NewAim_" .. key, Value = settings[key], Callback = function(value) changed(key, value) end }) end
+		local function slider(group, key, title, min, max, step) group:Slider({ Title = title, Flag = "NewAim_" .. key, Step = step or 1, Value = { Min = min, Max = max, Default = settings[key] }, Callback = function(value) changed(key, value) end }) end
+		local function dropdown(group, key, title, values) group:Dropdown({ Title = title, Flag = "NewAim_" .. key, Values = values, Value = settings[key], Callback = function(value) changed(key, value) end }) end
+		local general = section("Aim Assist", "crosshair")
+		dropdown(general, "TargetPart", "Target Part", { "Auto", "Head", "HumanoidRootPart" })
+		toggle(general, "WallCheck", "Check for Walls")
+		slider(general, "Smoothness", "Aim Lock Smoothness", 0.1, 1, 0.05)
+		local fov = section("Aim Circle", "circle")
+		toggle(fov, "FOVEnabled", "Limit Aim to Circle")
+		slider(fov, "FOVRadius", "Circle Radius", 30, 500)
+		toggle(fov, "FOVFilled", "Filled Circle")
+		slider(fov, "FOVTransparency", "Circle Opacity", 0.1, 1, 0.05)
+		fov:Colorpicker({ Title = "Circle Color", Flag = "NewAim_FOVColor", Default = settings.FOVColor, Callback = function(color) changed("FOVColor", color) end })
+		toggle(fov, "RangeIndicators", "Show Knife Range")
+		local prediction = section("Prediction", "wifi")
+		toggle(prediction, "PredictionEnabled", "Movement Prediction")
+		toggle(prediction, "AutoPing", "Read Ping Automatically")
+		slider(prediction, "ManualPing", "Manual Ping (ms)", 0, 300)
+		slider(prediction, "PingMultiplier", "Ping Multiplier", 0.5, 3, 0.05)
+		local gun = section("Gun Aim", "shield")
+		toggle(gun, "GunSilentAim", "Gun Silent Aim")
+		toggle(gun, "GunAimLock", "Gun Aim Lock")
+		local gunCombat = section("Gun Combat", "shield", v13)
+		toggle(gunCombat, "GunAutoEquip", "Auto Equip Gun")
+		toggle(gunCombat, "GunAutoShoot", "Auto Shoot Murderer")
+		dropdown(gunCombat, "GunMethod", "Gun Method", { "Default", "WallBang" })
+		gunCombat:Button({ Title = "Shoot Murderer", Icon = "crosshair", Callback = function() aim.Shoot(true) end })
+		local knife = section("Knife Aim", "sword")
+		toggle(knife, "KnifeSilentAim", "Knife Silent Aim")
+		toggle(knife, "KnifeAimLock", "Knife Aim Lock")
+		local knifeCombat = section("Knife Combat", "sword", v13)
+		toggle(knifeCombat, "KnifeAutoEquip", "Auto Equip Knife")
+		dropdown(knifeCombat, "KnifeMethod", "Knife Method", { "Default", "WallBang" })
+		toggle(knifeCombat, "FastKnifeThrow", "Fast Knife Throw")
+		slider(knifeCombat, "KnifeSpeedMultiplier", "Knife Speed Multiplier", 2, 10)
+		toggle(knifeCombat, "KnifeAutoThrow", "Auto Throw Knife")
+		slider(knifeCombat, "KnifeAutoThrowDistance", "Auto Throw Range", 10, 150)
+		knifeCombat:Button({ Title = "Throw Knife", Icon = "zap", Callback = function() aim.Throw(true) end })
+	end
+
+	-- Additional player/world utilities, with bounded work and reversible settings.
+	do
+		local settings = {
+			HipHeightEnabled = false, HipHeight = 2, FOVEnabled = false, FOV = 70,
+			GravityEnabled = false, Gravity = 196.2, AntiVoid = false,
+			AutoMapVote = false, PreferredMap = "Any", FlingDuration = 1.8,
+			AutoFling = false, AutoFlingRole = "Murderer", TouchFling = false,
+		}
+		tbl.UtilitySettings = settings
+		tbl.NewUtility = {}
+		local utility = tbl.NewUtility
+		local hipOriginal, fovOriginal = setmetatable({}, { __mode = "k" }), setmetatable({}, { __mode = "k" })
+		local gravityOriginal, voidOriginal
+		local lastSafeCharacter, lastSafeCFrame
+		local connections = {}
+		local function disconnect(key)
+			if connections[key] then fn4(connections[key]); connections[key] = nil end
+		end
+		local function notify(message)
+			v:Notify({ Title = "Coolwip Hub", Content = message, Duration = 3 })
+		end
+		local function characterParts(player)
+			local character = player and player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			local root = humanoid and humanoid.RootPart or character and character:FindFirstChild("HumanoidRootPart")
+			if character and character.Parent and humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+				return character, humanoid, root
+			end
+		end
+		local function applyHipHeight()
+			if not settings.HipHeightEnabled then return end
+			local _, humanoid = characterParts(localPlayer)
+			if humanoid then
+				if hipOriginal[humanoid] == nil then hipOriginal[humanoid] = humanoid.HipHeight end
+				if humanoid.HipHeight ~= settings.HipHeight then humanoid.HipHeight = settings.HipHeight end
+			end
+		end
+		function tbl.SetHipHeight(enabled, value)
+			if value ~= nil then settings.HipHeight = math.clamp(tonumber(value) or 2, 0, 50) end
+			settings.HipHeightEnabled = enabled == true
+			disconnect("HipHeight")
+			if settings.HipHeightEnabled then
+				applyHipHeight()
+				connections.HipHeight = tbl.Every(0.25, applyHipHeight)
+			else
+				for humanoid, original in pairs(hipOriginal) do
+					if humanoid.Parent then pcall(function() humanoid.HipHeight = original end) end
+				end
+				table.clear(hipOriginal)
+			end
+		end
+		local function applyFOV()
+			local camera = workspace_.CurrentCamera
+			if settings.FOVEnabled and camera then
+				if fovOriginal[camera] == nil then fovOriginal[camera] = camera.FieldOfView end
+				camera.FieldOfView = settings.FOV
+			end
+		end
+		function tbl.SetFOV(enabled, value)
+			if value ~= nil then settings.FOV = math.clamp(tonumber(value) or 70, 30, 120) end
+			settings.FOVEnabled = enabled == true
+			disconnect("FOV")
+			if settings.FOVEnabled then
+				applyFOV()
+				connections.FOV = fn3(workspace_:GetPropertyChangedSignal("CurrentCamera"):Connect(applyFOV))
+			else
+				for camera, original in pairs(fovOriginal) do
+					if camera.Parent then pcall(function() camera.FieldOfView = original end) end
+				end
+				table.clear(fovOriginal)
+			end
+		end
+		function tbl.SetGravity(enabled, value)
+			if value ~= nil then settings.Gravity = math.clamp(tonumber(value) or 196.2, 0, 300) end
+			settings.GravityEnabled = enabled == true
+			if settings.GravityEnabled then
+				if gravityOriginal == nil then gravityOriginal = workspace_.Gravity end
+				workspace_.Gravity = settings.Gravity
+			elseif gravityOriginal ~= nil then
+				workspace_.Gravity = gravityOriginal
+				gravityOriginal = nil
+			end
+		end
+		function tbl.SetAntiVoid(enabled)
+			settings.AntiVoid = enabled == true
+			disconnect("AntiVoid")
+			lastSafeCharacter, lastSafeCFrame = nil, nil
+			if settings.AntiVoid then
+				if voidOriginal == nil then voidOriginal = workspace_.FallenPartsDestroyHeight end
+				workspace_.FallenPartsDestroyHeight = 0 / 0
+				connections.AntiVoid = tbl.Every(0.2, function()
+					local character, humanoid, root = characterParts(localPlayer)
+					if not character or tbl.IsFlinging or tbl.Config.Invisible or tbl.Config.FlyEnabled then return end
+					if character ~= lastSafeCharacter then lastSafeCharacter, lastSafeCFrame = character, nil end
+					local threshold = (voidOriginal and voidOriginal == voidOriginal) and voidOriginal + 20 or -400
+					if root.Position.Y > threshold and humanoid.FloorMaterial ~= Enum.Material.Air then
+						lastSafeCFrame = character:GetPivot()
+					elseif lastSafeCFrame and root.Position.Y <= threshold then
+						character:PivotTo(lastSafeCFrame * CFrame.new(0, 3, 0))
+						root.AssemblyLinearVelocity = Vector3.zero
+						root.AssemblyAngularVelocity = Vector3.zero
+					end
+				end)
+			elseif voidOriginal ~= nil then
+				workspace_.FallenPartsDestroyHeight = voidOriginal
+				voidOriginal = nil
+			end
+		end
+		function tbl.TeleportToInnocent()
+			local target = tbl.NearestRole("Innocent")
+			if target then tbl.TeleportToPlayer(target) else notify("No living Innocent is available.") end
+		end
+		function tbl.TeleportToHero()
+			local target = tbl.NearestRole("Hero")
+			if target then tbl.TeleportToPlayer(target) else notify("No living Hero is available.") end
+		end
+		function tbl.TeleportToGunDrop()
+			local character, _, root = characterParts(localPlayer)
+			if not character then return end
+			local closest, distance = nil, math.huge
+			for _, drop in ipairs(tbl.FindGunDrops()) do
+				if drop.Parent then
+					local d = (root.Position - drop.Position).Magnitude
+					if d < distance then closest, distance = drop, d end
+				end
+			end
+			if not closest then notify("No dropped gun is available."); return end
+			character:PivotTo(closest.CFrame * CFrame.new(0, 2, 0))
+			if type(firetouchinterest) == "function" then
+				pcall(function() firetouchinterest(root, closest, 0); firetouchinterest(root, closest, 1) end)
+			end
+		end
+
+		-- Only discover the small lobby pad collection, once per second while enabled.
+		local function votePads()
+			local lobby = workspace_:FindFirstChild("Lobby") or workspace_:FindFirstChild("RegularLobby")
+			local folder = lobby and lobby:FindFirstChild("VotePads") or workspace_:FindFirstChild("VotePads")
+			local result = {}
+			if not folder then return result end
+			for _, model in ipairs(folder:GetChildren()) do
+				local pad = model:FindFirstChild("Pad")
+				local info = model:FindFirstChild("VoteInfoGui", true)
+				local mapInfo = model:FindFirstChild("MapInfoGui", true)
+				local enabled = info and info:IsA("SurfaceGui") and info.Enabled or mapInfo and mapInfo:IsA("SurfaceGui") and mapInfo.Enabled
+				if pad and pad:IsA("BasePart") and enabled then
+					local nameLabel = info and info:FindFirstChild("MapName", true) or mapInfo and mapInfo:FindFirstChild("MapName", true)
+					local voteLabel = info and info:FindFirstChild("Votes", true)
+					result[#result + 1] = {
+						PadPart = pad,
+						MapName = nameLabel and nameLabel:IsA("TextLabel") and nameLabel.Text or model.Name,
+						Votes = voteLabel and voteLabel:IsA("TextLabel") and tonumber(string.match(voteLabel.Text, "%d+")) or 0,
+					}
+				end
+			end
+			return result
+		end
+		function tbl.ChooseVotePad(pads, preferred)
+			local normalized = string.lower(tostring(preferred or "Any")):gsub("[^%w]", "")
+			local best
+			for _, pad in ipairs(pads) do
+				local name = string.lower(pad.MapName):gsub("[^%w]", "")
+				if normalized ~= "" and normalized ~= "any" and string.find(name, normalized, 1, true) then return pad end
+				if not best or pad.Votes > best.Votes then best = pad end
+			end
+			return best
+		end
+		function tbl.ProcessAutoMapVote()
+			if not tbl.Active or not settings.AutoMapVote or tbl.IsFlinging or tbl.RoundState == "InRound" then return end
+			local pads = votePads()
+			if #pads == 0 then return end
+			local character, _, root = characterParts(localPlayer)
+			if not character then return end
+			local map = fn8()
+			local timer = tbl.GetTimer and tbl.GetTimer()
+			if map and (tonumber(timer) or 0) > 0 then return end
+			local choice = tbl.ChooseVotePad(pads, settings.PreferredMap)
+			if choice and choice.PadPart.Parent and (root.Position - choice.PadPart.Position).Magnitude > 5 then
+				character:PivotTo(choice.PadPart.CFrame * CFrame.new(0, 3, 0))
+			end
+		end
+		function tbl.SetAutoMapVote(enabled)
+			settings.AutoMapVote = enabled == true
+			disconnect("MapVote")
+			if settings.AutoMapVote then connections.MapVote = tbl.Every(1, tbl.ProcessAutoMapVote) end
+		end
+		function tbl.SetAutoMapVotePreferred(name) settings.PreferredMap = tostring(name or "Any") end
+
+		-- Every existing fling button uses this bounded routine and its duration control.
+		local activeFling, touchPending
+		local batchGeneration, batchBusy, autoIndex = 0, false, 0
+		local function restoreTouch()
+			local pending = touchPending
+			touchPending = nil
+			if pending and pending.Root.Parent then
+				pcall(function() pending.Root.AssemblyLinearVelocity = pending.Velocity end)
+			end
+		end
+		local function finishFling(session)
+			if not session or session.Finished then return end
+			session.Finished = true
+			if activeFling == session then activeFling = nil; tbl.IsFlinging = false end
+			for part, canCollide in pairs(session.Collisions) do
+				if part.Parent then pcall(function() part.CanCollide = not tbl.Config.Noclip and canCollide end) end
+			end
+			pcall(function()
+				if session.Humanoid.Parent then session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, session.Seated) end
+				if session.Root.Parent then
+					session.Root.AssemblyLinearVelocity = Vector3.zero
+					session.Root.AssemblyAngularVelocity = Vector3.zero
+					if localPlayer.Character == session.Character and session.Character.Parent then session.Character:PivotTo(session.Origin) end
+				end
+			end)
+		end
+		function tbl.StopFling()
+			batchGeneration += 1
+			batchBusy = false
+			finishFling(activeFling)
+		end
+		function tbl.SetFlingDuration(value) settings.FlingDuration = math.clamp(tonumber(value) or 1.8, 0.5, 5) end
+		function tbl.FlingTarget(target)
+			if not tbl.Active or tbl.IsFlinging or target == localPlayer then return false end
+			local character, humanoid, root = characterParts(localPlayer)
+			local targetCharacter, targetHumanoid, targetRoot = characterParts(target)
+			if not character or not targetCharacter then return false end
+			restoreTouch()
+			local session = {
+				Character = character, Humanoid = humanoid, Root = root, Origin = character:GetPivot(),
+				Seated = humanoid:GetStateEnabled(Enum.HumanoidStateType.Seated), Collisions = {},
+			}
+			activeFling, tbl.IsFlinging = session, true
+			local ok = pcall(function()
+				for part in pairs(tbl.GetCachedParts(character)) do
+					if part.Parent then session.Collisions[part] = part.CanCollide; part.CanCollide = false end
+				end
+				humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+				local deadline, step = os.clock() + settings.FlingDuration, 0
+				while tbl.Active and activeFling == session and os.clock() < deadline do
+					if localPlayer.Character ~= character or target.Character ~= targetCharacter or not root.Parent or not targetRoot.Parent or humanoid.Health <= 0 or targetHumanoid.Health <= 0 then break end
+					step += 1
+					local angle = step * 1.7
+					local prediction = targetRoot.AssemblyLinearVelocity * 0.1
+					if prediction.Magnitude > 15 then prediction = prediction.Unit * 15 end
+					root.CFrame = CFrame.new(targetRoot.Position + prediction + Vector3.new(math.cos(angle) * 1.2, step % 2 == 0 and 1.5 or -1.5, math.sin(angle) * 1.2)) * CFrame.Angles(angle, 0, 0)
+					root.AssemblyLinearVelocity = Vector3.new(99999, 99999, 99999)
+					root.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
+					runService.PostSimulation:Wait()
+				end
+			end)
+			finishFling(session)
+			return ok
+		end
+		function tbl.FlingHero()
+			local target = tbl.NearestRole("Hero")
+			if target then tbl.FlingTarget(target) else notify("No living Hero is available.") end
+		end
+		local function flingBatch(role)
+			if batchBusy then return end
+			local generation = batchGeneration
+			local targets = table.clone(role and tbl.GetRoleSnapshot()[role] or tbl.GetPlayersCached())
+			batchBusy = true
+			task.spawn(function()
+				for _, target in ipairs(targets) do
+					if not tbl.Active or generation ~= batchGeneration then break end
+					if target ~= localPlayer and (not role or tbl.GetRole(target) == role) then
+						tbl.FlingTarget(target)
+						task.wait(0.2)
+					end
+				end
+				if generation == batchGeneration then batchBusy = false end
+			end)
+		end
+		function tbl.FlingInnocents() flingBatch("Innocent") end
+		function tbl.FlingAllPlayers() flingBatch(nil) end
+		function tbl.SetAutoFling(enabled, role)
+			settings.AutoFling = enabled == true
+			if role then settings.AutoFlingRole = role end
+			disconnect("AutoFling")
+			if not settings.AutoFling then tbl.StopFling(); return end
+			connections.AutoFling = tbl.Every(0.5, function()
+				if not settings.AutoFling or tbl.IsFlinging or batchBusy then return end
+				local candidates = tbl.GetRoleSnapshot()[settings.AutoFlingRole] or {}
+				if #candidates == 0 then return end
+				for _ = 1, #candidates do
+					autoIndex = autoIndex % #candidates + 1
+					local target = candidates[autoIndex]
+					if target ~= localPlayer and characterParts(target) then tbl.FlingTarget(target); break end
+				end
+			end)
+		end
+		function tbl.SetTouchFling(enabled)
+			settings.TouchFling = enabled == true
+			disconnect("TouchApply"); disconnect("TouchRestore")
+			restoreTouch()
+			if not settings.TouchFling then return end
+			connections.TouchApply = fn3(runService.Heartbeat:Connect(function()
+				if not tbl.Active or not settings.TouchFling or tbl.IsFlinging then return end
+				restoreTouch()
+				local _, _, root = characterParts(localPlayer)
+				if root then
+					touchPending = { Root = root, Velocity = root.AssemblyLinearVelocity }
+					root.AssemblyLinearVelocity = touchPending.Velocity * 10000 + Vector3.new(0, 10000, 0)
+				end
+			end))
+			connections.TouchRestore = fn3(runService.RenderStepped:Connect(restoreTouch))
+		end
+		function utility.Cleanup()
+			tbl.SetAutoMapVote(false)
+			tbl.SetAutoFling(false)
+			tbl.SetTouchFling(false)
+			tbl.SetHipHeight(false)
+			tbl.SetFOV(false)
+			tbl.SetGravity(false)
+			tbl.SetAntiVoid(false)
+			for key in pairs(connections) do disconnect(key) end
+		end
+		table.insert(tbl.NewFeatures.Cleanups, utility.Cleanup)
+
+		local world = v12:Section({ Title = "World & Character", Icon = "globe", Box = true, BoxBorder = true, Opened = true })
+		world:Toggle({ Title = "Custom Hip Height", Flag = "HipHeightToggle", Value = false, Callback = function(value) tbl.SetHipHeight(value) end })
+		world:Slider({ Title = "Hip Height", Flag = "HipHeightSlider", Step = 0.1, Value = { Min = 0, Max = 50, Default = 2 }, Callback = function(value) tbl.SetHipHeight(settings.HipHeightEnabled, value) end })
+		world:Toggle({ Title = "Custom Field of View", Flag = "FOVToggle", Value = false, Callback = function(value) tbl.SetFOV(value) end })
+		world:Slider({ Title = "Field of View", Flag = "FOVSlider", Step = 1, Value = { Min = 30, Max = 120, Default = 70 }, Callback = function(value) tbl.SetFOV(settings.FOVEnabled, value) end })
+		world:Toggle({ Title = "Custom Gravity", Flag = "GravityToggle", Value = false, Callback = function(value) tbl.SetGravity(value) end })
+		world:Slider({ Title = "Gravity", Flag = "GravitySlider", Step = 0.1, Value = { Min = 0, Max = 300, Default = 196.2 }, Callback = function(value) tbl.SetGravity(settings.GravityEnabled, value) end })
+		world:Toggle({ Title = "Anti-Void", Flag = "AntiVoidToggle", Value = false, Callback = tbl.SetAntiVoid })
+		local teleport = v15:Section({ Title = "More Teleports", Icon = "map-pin", Box = true, BoxBorder = true, Opened = true })
+		teleport:Button({ Title = "Teleport to Nearest Hero", Icon = "shield", Callback = tbl.TeleportToHero })
+		teleport:Button({ Title = "Teleport to Nearest Innocent", Icon = "user", Callback = tbl.TeleportToInnocent })
+		teleport:Button({ Title = "Teleport to Gun Drop", Icon = "crosshair", Callback = tbl.TeleportToGunDrop })
+		local voting = v15:Section({ Title = "Auto Map Vote", Icon = "vote", Box = true, BoxBorder = true, Opened = true })
+		voting:Toggle({ Title = "Auto Map Vote", Flag = "AutoMapVoteToggle", Value = false, Callback = tbl.SetAutoMapVote })
+		voting:Dropdown({ Title = "Preferred Map", Flag = "AutoMapVotePreferredDropdown", Values = { "Any", "Bank", "Bio Lab", "Factory", "Hospital", "Hotel", "House2", "Mansion 2", "Mil Base", "Office", "Police Station", "Research Facility", "Workplace" }, Value = "Any", Callback = tbl.SetAutoMapVotePreferred })
+		voting:Input({ Title = "Custom Preferred Map", Flag = "AutoMapVoteCustomInput", Value = "", Placeholder = "Optional map name", Callback = function(name) if type(name) == "string" and name:match("%S") then tbl.SetAutoMapVotePreferred(name) end end })
+		local fling = v16:Section({ Title = "Fling Options", Icon = "wind", Box = true, BoxBorder = true, Opened = true })
+		fling:Slider({ Title = "Fling Duration (seconds)", Flag = "FlingDurationSlider", Step = 0.1, Value = { Min = 0.5, Max = 5, Default = 1.8 }, Callback = tbl.SetFlingDuration })
+		local autoToggle = fling:Toggle({ Title = "Auto Fling", Flag = "AutoFlingToggle", Value = false, Callback = function(value) tbl.SetAutoFling(value) end })
+		fling:Dropdown({ Title = "Auto Fling Role", Flag = "AutoFlingRoleDropdown", Values = { "Murderer", "Sheriff", "Hero", "Innocent" }, Value = "Murderer", Callback = function(role) tbl.SetAutoFling(settings.AutoFling, role) end })
+		local touchToggle = fling:Toggle({ Title = "Touch Fling", Flag = "TouchFlingToggle", Value = false, Callback = tbl.SetTouchFling })
+		fling:Keybind({Title = "Touch Fling Keybind", Flag = "TouchFlingKeybind", Value = "F", Callback = function()
+			if not tbl.Active then return end
+			touchToggle:Set(not settings.TouchFling)
+		end})
+		fling:Button({ Title = "Fling Nearest Hero", Icon = "shield", Callback = tbl.FlingHero })
+		fling:Button({ Title = "Fling Innocent Players", Icon = "users", Callback = tbl.FlingInnocents })
+		fling:Button({ Title = "Stop Fling", Icon = "square", Callback = function()
+			tbl.SetAutoFling(false); tbl.SetTouchFling(false)
+			if autoToggle and autoToggle.Set then autoToggle:Set(false) end
+			if touchToggle and touchToggle.Set then touchToggle:Set(false) end
+		end })
+	end
+
+	-- Floating controls share the existing WindUI controls and keep layout files local.
+	do
+		local ui = { Elements = {}, Frames = {}, Layout = {}, Editing = false, CursorEnabled = false }
+		tbl.NewInterface = ui
+		local connections, definitions, labels = {}, {}, {}
+		local gui, cursor, drag, heartbeat, oldMouseIcon
+		local path = "CoolwipHub_FloatingLayout.json"
+		local function connect(signal, callback)
+			local connection = fn3(signal:Connect(callback)); connections[#connections + 1] = connection; return connection
+		end
+		local function notify(message) v:Notify({ Title = "Coolwip Hub", Content = message, Duration = 4 }) end
+		local function number(value, fallback, low, high)
+			if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then return fallback end
+			return math.clamp(value, low, high)
+		end
+		local function state(id)
+			if type(ui.Layout[id]) ~= "table" then ui.Layout[id] = {} end
+			return ui.Layout[id]
+		end
+		if type(readfile) == "function" then
+			local success, saved = pcall(function() return httpService:JSONDecode(readfile(path)) end)
+			if success and type(saved) == "table" and type(saved.Elements) == "table" then ui.Layout = saved.Elements end
+		end
+		local function make(class, props, parent)
+			local item = Instance.new(class)
+			for key, value in pairs(props) do item[key] = value end
+			item.Parent = parent; return item
+		end
+		local function screen()
+			if not gui then gui = make("ScreenGui", { Name = "CoolwipHub_FloatingControls", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 180, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, playerGui) end
+			return gui
+		end
+		local function viewport() return workspace_.CurrentCamera and workspace_.CurrentCamera.ViewportSize or Vector2.new(1280, 720) end
+		local function clampFrame(frame)
+			local size = viewport()
+			local width, height = math.clamp(frame.Size.X.Offset, 90, math.max(90, math.min(400, size.X))), math.clamp(frame.Size.Y.Offset, 30, math.max(30, math.min(160, size.Y)))
+			frame.Size = UDim2.fromOffset(width, height)
+			frame.Position = UDim2.fromOffset(math.clamp(frame.Position.X.Offset, 0, math.max(0, size.X - width)), math.clamp(frame.Position.Y.Offset, 0, math.max(0, size.Y - height)))
+		end
+		local function remember(id)
+			local frame = ui.Frames[id]; if not frame then return end
+			local saved, size = state(id), viewport()
+			saved.X, saved.Y = frame.Position.X.Offset / math.max(1, size.X), frame.Position.Y.Offset / math.max(1, size.Y)
+			saved.Width, saved.Height = frame.Size.X.Offset, frame.Size.Y.Offset
+		end
+		function ui.SaveLayout(quiet)
+			for id in pairs(ui.Frames) do remember(id) end
+			if type(writefile) ~= "function" then if not quiet then notify("Layout is kept for this session. Saving needs local file support.") end; return false end
+			local saved = { Version = 1, Elements = {} }
+			for id in pairs(ui.Elements) do saved.Elements[id] = state(id) end
+			local success = pcall(function() writefile(path, httpService:JSONEncode(saved)) end)
+			if not quiet then notify(success and "Floating layout saved locally." or "Could not save the floating layout.") end
+			return success
+		end
+		local function update(id)
+			local frame, definition = ui.Frames[id], ui.Elements[id]; if not frame then return end
+			local on = definition.Control and definition.Control.Value == true
+			local color = ui.Editing and Color3.fromRGB(220, 125, 70) or (on and Color3.fromRGB(190, 45, 65) or Color3.fromRGB(85, 35, 44))
+			if frame.UIStroke.Color ~= color then frame.UIStroke.Color = color end
+			local text = definition.Control and (on and "ON" or "OFF") or ">"
+			if frame.Indicator.Text ~= text then frame.Indicator.Text = text end
+			if frame.ResizeGrip.Visible ~= ui.Editing then frame.ResizeGrip.Visible = ui.Editing end
+		end
+		local function beginDrag(id, mode, input)
+			if not ui.Editing or drag then return end
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+			local frame = ui.Frames[id]; clampFrame(frame)
+			drag = { Id = id, Mode = mode, Input = input, Position = input.Position, Start = frame.Position, Size = frame.Size }
+		end
+		function ui.EnableElement(id, enabled)
+			local definition = ui.Elements[id]; if not definition then return end
+			state(id).Enabled = enabled == true
+			local frame = ui.Frames[id]
+			if frame then frame.Visible = enabled == true; return end
+			if not enabled then return end
+			local saved, size, index = state(id), viewport(), definition.Index - 1
+			frame = make("Frame", { Name = id, Size = UDim2.fromOffset(number(saved.Width, 170, 90, 400), number(saved.Height, 38, 30, 160)), Position = UDim2.fromOffset(number(saved.X, 0.04 + math.floor(index / 9) * 0.13, 0, 1) * size.X, number(saved.Y, 0.1 + index % 9 * 0.065, 0, 1) * size.Y), BackgroundColor3 = Color3.fromRGB(30, 17, 21), BackgroundTransparency = 0.15, BorderSizePixel = 0, Active = true }, screen())
+			ui.Frames[id] = frame
+			make("UICorner", { CornerRadius = UDim.new(0, 7) }, frame)
+			make("UIStroke", { Thickness = 1, Color = Color3.fromRGB(85, 35, 44) }, frame)
+			make("TextLabel", { Name = "Title", Text = definition.Title, Size = UDim2.new(1, -46, 1, 0), Position = UDim2.fromOffset(9, 0), BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(246, 228, 232), Font = Enum.Font.Gotham, TextSize = 12, TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left }, frame)
+			make("TextLabel", { Name = "Indicator", Text = "", Size = UDim2.new(0, 34, 1, 0), Position = UDim2.new(1, -37, 0, 0), BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(222, 93, 113), Font = Enum.Font.GothamBold, TextSize = 11 }, frame)
+			local action = make("TextButton", { Name = "Action", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 2 }, frame)
+			local resize = make("TextButton", { Name = "ResizeGrip", Size = UDim2.fromOffset(16, 16), Position = UDim2.new(1, -16, 1, -16), BackgroundColor3 = Color3.fromRGB(147, 42, 60), Text = "+", TextColor3 = Color3.new(1, 1, 1), TextSize = 12, BorderSizePixel = 0, ZIndex = 3, Visible = ui.Editing }, frame)
+			connect(action.InputBegan, function(input) beginDrag(id, "move", input) end)
+			connect(resize.InputBegan, function(input) beginDrag(id, "resize", input) end)
+			connect(action.Activated, function()
+				if ui.Editing or not tbl.Active then return end
+				if definition.Control then definition.Control:Set(not definition.Control.Value)
+				else task.spawn(function() local success = pcall(definition.Callback); if not success and tbl.Active then notify("That action is unavailable right now.") end end) end
+				update(id)
+			end)
+			clampFrame(frame); update(id)
+		end
+		function ui.SetEditMode(enabled)
+			ui.Editing = enabled == true
+			if drag then remember(drag.Id); drag = nil end
+			for id in pairs(ui.Frames) do update(id) end
+		end
+		connect(userInputService.InputChanged, function(input)
+			if cursor and cursor.Visible and input.UserInputType == Enum.UserInputType.MouseMovement then cursor.Position = UDim2.fromOffset(input.Position.X, input.Position.Y) end
+			if not drag or not ui.Editing then return end
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= drag.Input then return end
+			local frame = ui.Frames[drag.Id]; if not frame then drag = nil; return end
+			local delta = input.Position - drag.Position
+			if drag.Mode == "move" then frame.Position = UDim2.fromOffset(drag.Start.X.Offset + delta.X, drag.Start.Y.Offset + delta.Y)
+			else frame.Size = UDim2.fromOffset(drag.Size.X.Offset + delta.X, drag.Size.Y.Offset + delta.Y) end
+			clampFrame(frame)
+		end)
+		connect(userInputService.InputEnded, function(input)
+			if drag and (input == drag.Input or input.UserInputType == Enum.UserInputType.MouseButton1) then remember(drag.Id); drag = nil end
+		end)
+		local function add(id, title, control, callback)
+			if ui.Elements[id] then return end
+			local display = labels[title] and (title .. " (" .. id .. ")") or title
+			labels[display] = id
+			local definition = { Id = id, Title = title, Display = display, Control = control, Callback = callback }
+			definitions[#definitions + 1] = definition; ui.Elements[id] = definition
+		end
+		local registered = {}
+		for id, control in pairs(v10.PendingFlags or {}) do registered[id] = control end
+		for id, control in pairs(v10.CurrentConfig and v10.CurrentConfig.Elements or {}) do registered[id] = control end
+		for id, control in pairs(registered) do
+			if control.__type == "Toggle" and type(control.Set) == "function" and not id:match("^show_") and id ~= "ButtonsLockedToggle" then add("Toggle_" .. id, control.Title or id, control) end
+		end
+		local actions = {
+			{ "ShootMurderer", "Shoot Murderer" }, { "WallBangShoot", "Wall Bang" }, { "GrabGun", "Pick Up Gun" }, { "KillAll", "Kill All" }, { "ExecuteSilentThrow", "Throw Knife" }, { "ChatRoles", "Expose Roles" },
+			{ "TeleportToMap", "Teleport to Map" }, { "TeleportToLobby", "Teleport to Lobby" }, { "TeleportToMurderer", "Teleport to Murderer" }, { "TeleportToSheriff", "Teleport to Sheriff" }, { "TeleportToHero", "Teleport to Hero" }, { "TeleportToInnocent", "Teleport to Innocent" }, { "TeleportToGunDrop", "Teleport to Dropped Gun" },
+			{ "FlingMurderer", "Fling Murderer" }, { "FlingSheriff", "Fling Sheriff" }, { "FlingHero", "Fling Hero" }, { "FlingInnocents", "Fling Innocent" }, { "FlingAll", "Fling All" }, { "StopFling", "Stop Fling" },
+		}
+		for _, action in ipairs(actions) do local callback = tbl[action[1]]; if type(callback) == "function" then add("Action_" .. action[1], action[2], nil, callback) end end
+		for _, role in ipairs({ "Murderer", "Sheriff", "Hero", "Innocent" }) do
+			if not ui.Elements["Action_TeleportTo" .. role] then add("Action_TeleportTo" .. role, "Teleport to " .. role, nil, function()
+				local target = tbl.NearestRole(role)
+				local root = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+				local destination = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+				if root and destination then root.CFrame = destination.CFrame * CFrame.new(0, 0, 4) end
+			end) end
+			if role ~= "Innocent" and not ui.Elements["Action_Fling" .. role] then add("Action_Fling" .. role, "Fling " .. role, nil, function() local target = tbl.NearestRole(role); if target then tbl.FlingTarget(target) end end) end
+		end
+		table.sort(definitions, function(a, b) return a.Display < b.Display end)
+		local toggles, actionsList, selectedToggles, selectedActions = {}, {}, {}, {}
+		for index, definition in ipairs(definitions) do
+			definition.Index = index
+			local names, selected = definition.Control and toggles or actionsList, definition.Control and selectedToggles or selectedActions
+			names[#names + 1] = definition.Display
+			if state(definition.Id).Enabled == true then selected[#selected + 1] = definition.Display; ui.EnableElement(definition.Id, true) end
+		end
+		local layout = v17:Section({ Title = "Floating Control Layout", Icon = "panels-top-left", Box = true, BoxBorder = true, Opened = true })
+		layout:Paragraph({ Title = "Custom floating controls", Desc = "Choose controls below. Edit mode lets you drag and resize them; turn it off to use them. Save the layout to keep it on this device." })
+		layout:Toggle({ Title = "Edit Floating Layout", Value = false, Callback = ui.SetEditMode })
+		local function selectionChanged(chosen, controlType)
+			local selected = {}
+			for _, value in ipairs(type(chosen) == "table" and chosen or {}) do selected[type(value) == "table" and value.Title or value] = true end
+			for _, definition in ipairs(definitions) do if (definition.Control ~= nil) == controlType then ui.EnableElement(definition.Id, selected[definition.Display] == true) end end
+		end
+		local toggleSelector = layout:Dropdown({ Title = "Floating Toggles", Values = toggles, Value = selectedToggles, Multi = true, AllowNone = true, SearchBarEnabled = true, Callback = function(values) selectionChanged(values, true) end })
+		local actionSelector = layout:Dropdown({ Title = "Floating Actions", Values = actionsList, Value = selectedActions, Multi = true, AllowNone = true, SearchBarEnabled = true, Callback = function(values) selectionChanged(values, false) end })
+		layout:Button({ Title = "Save Floating Layout", Icon = "save", Callback = function() ui.SaveLayout(false) end })
+		layout:Button({ Title = "Reset Floating Positions", Icon = "rotate-ccw", Callback = function()
+			for _, definition in ipairs(definitions) do
+				local saved, frame = state(definition.Id), ui.Frames[definition.Id]
+				saved.X, saved.Y, saved.Width, saved.Height = nil, nil, nil, nil
+				if frame then
+					local index, size = definition.Index - 1, viewport()
+					frame.Position = UDim2.fromOffset((0.04 + math.floor(index / 9) * 0.13) * size.X, (0.1 + index % 9 * 0.065) * size.Y)
+					frame.Size = UDim2.fromOffset(170, 38); clampFrame(frame)
+				end
+			end
+			ui.SaveLayout(false)
+		end })
+		layout:Button({ Title = "Hide All Floating Controls", Icon = "eye-off", Callback = function()
+			toggleSelector:Select({}); actionSelector:Select({})
+			for id in pairs(ui.Elements) do ui.EnableElement(id, false) end
+			ui.SaveLayout(true)
+		end })
+		local preferences = v18:Section({ Title = "Menu Preferences", Icon = "mouse-pointer-2", Box = true, BoxBorder = true, Opened = true })
+		preferences:Toggle({ Title = "Custom Cursor", Flag = "CoolwipCustomCursor", Value = false, Callback = function(enabled)
+			ui.CursorEnabled = enabled
+			if enabled and not cursor then
+				cursor = make("Frame", { Name = "Cursor", Size = UDim2.fromOffset(5, 5), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(236, 92, 113), BorderSizePixel = 0, ZIndex = 1000, Visible = false }, screen())
+				make("UICorner", { CornerRadius = UDim.new(1, 0) }, cursor); make("UIStroke", { Color = Color3.fromRGB(45, 10, 18), Thickness = 2 }, cursor)
+			end
+		end })
+		preferences:Button({ Title = "Unload Coolwip Hub", Icon = "power", Callback = function() local cleanup = getgenv().CoolwipHub_Cleanup; if type(cleanup) == "function" then cleanup() end end })
+		heartbeat = tbl.Every(0.25, function()
+			for id, frame in pairs(ui.Frames) do if frame.Visible then update(id) end end
+			local showCursor = ui.CursorEnabled and not v10.Closed and not v10.Destroyed
+			if cursor and cursor.Visible ~= showCursor then
+				cursor.Visible = showCursor
+				if showCursor then oldMouseIcon = userInputService.MouseIconEnabled; userInputService.MouseIconEnabled = false; local position = userInputService:GetMouseLocation(); cursor.Position = UDim2.fromOffset(position.X, position.Y)
+				elseif oldMouseIcon ~= nil then userInputService.MouseIconEnabled = oldMouseIcon; oldMouseIcon = nil end
+			end
+		end)
+		function ui.Cleanup()
+			drag = nil
+			if oldMouseIcon ~= nil then userInputService.MouseIconEnabled = oldMouseIcon; oldMouseIcon = nil end
+			if heartbeat then fn4(heartbeat); heartbeat = nil end
+			for _, connection in ipairs(connections) do fn4(connection) end
+			table.clear(connections)
+			if gui then gui:Destroy(); gui = nil; cursor = nil end
+			table.clear(ui.Frames)
+		end
+		table.insert(tbl.NewFeatures.Cleanups, ui.Cleanup)
+	end
+
+	-- Bundled language and appearance preferences. Only local files are used.
+	do
+		local translations = {["en"]={["aim.auto_grab_gun"]="Auto Pick Up Dropped Gun",["aim.auto_kill_all"]="Auto Kill All Players",["aim.auto_ping"]="Auto Network Ping",["aim.auto_revenge"]="Auto Revenge (Hero Mode)",["aim.auto_throw"]="Auto Throw Knife",["aim.auto_throw_delay"]="Auto Throw Cooldown (s)",["aim.auto_throw_dist"]="Auto Throw Distance",["aim.btn_kill_all"]="Kill All Players",["aim.btn_pickup_gun"]="Pick Up Gun",["aim.btn_shoot_murderer"]="Shoot Murderer",["aim.btn_throw_knife"]="Throw Knife",["aim.dynamic_fov"]="Dynamic FOV Scaling",["aim.enable_fov"]="Enable FOV Circle",["aim.fast_throw"]="Fast Knife Throw",["aim.fov_center_dot"]="Show FOV Center Dot",["aim.fov_color"]="FOV Circle Color",["aim.fov_filled"]="Filled FOV Circle",["aim.fov_radius"]="FOV Radius",["aim.fov_rainbow"]="Rainbow FOV Circle",["aim.fov_transparency"]="FOV Transparency",["aim.gun_aim_lock"]="Gun Aim Lock",["aim.gun_auto_equip"]="Auto Equip Gun",["aim.gun_method"]="Gun Method",["aim.gun_silent_aim"]="Gun Silent Aim",["aim.highlight_target"]="Highlight Active Target",["aim.hit_chance"]="Hit Chance (%)",["aim.kill_aura"]="Kill Aura",["aim.kill_aura_delay"]="Kill Aura Interval (s)",["aim.kill_aura_range"]="Kill Aura Range",["aim.kill_aura_target_mode"]="Kill Aura Target Mode",["aim.knife_aim_lock"]="Knife Aim Lock",["aim.knife_auto_equip"]="Auto Equip Knife",["aim.knife_method"]="Knife Method",["aim.knife_silent_aim"]="Knife Silent Aim",["aim.knife_speed"]="Knife Throw Speed",["aim.manual_ping"]="Manual Ping (ms)",["aim.ping_multiplier"]="Ping Multiplier",["aim.prediction_dot_color"]="Predicted Dot Color",["aim.show_prediction_dot"]="Show Predicted Impact Dot",["aim.show_target_tracer"]="Target Tracer Line",["aim.smoothness"]="Aim Lock Smoothness",["aim.target_highlight_color"]="Target Highlight Color",["aim.target_part"]="Target Body Part",["aim.target_priority"]="Target Priority",["aim.target_tracer_color"]="Target Tracer Color",["aim.triggerbot"]="Triggerbot",["aim.triggerbot_delay"]="Triggerbot Delay (s)",["aim.triggerbot_visible_only"]="Triggerbot Only Visible",["aim.wall_check"]="Wall Check",["group.configuration"]="Configuration",["group.flingactions"]="Fling Actions",["group.fovcircle"]="FOV Circle",["group.generalaim"]="General Settings",["group.gunesp"]="Gun Drop ESP",["group.heroesp"]="Hero ESP",["group.innocentesp"]="Innocent ESP",["group.innocentutil"]="Innocent Utilities",["group.layoutcustom"]="Layout Customization",["group.localization"]="Language & Localization",["group.menu"]="Menu",["group.movement"]="Movement",["group.murderer"]="Murderer",["group.murdereresp"]="Murderer ESP",["group.playerteleport"]="Player Teleport",["group.prediction"]="Ping Prediction",["group.protection"]="Protection",["group.rolefling"]="Role Fling",["group.roleteleports"]="Role Teleports",["group.sheriffesp"]="Sheriff ESP",["group.sheriffhero"]="Sheriff & Hero",["group.themes"]="Themes",["group.trolling"]="Trolling",["group.uielements"]="UI Elements",["group.visualindicators"]="Visual Indicators",["group.world"]="World",["group.worldteleports"]="World Teleports",["interface.category_combat"]="Combat & Aim",["interface.category_misc"]="Miscellaneous",["interface.category_player"]="Player Controls",["interface.category_teleports"]="Teleportation",["interface.category_visuals"]="Visuals & ESP",["interface.edit_mode"]="Enable Edit Mode",["interface.floating_elements"]="Floating Elements",["interface.reset_layout"]="Reset Layout to Default",["interface.save_layout"]="Save Layout",["misc.auto_fling"]="Auto Fling",["misc.btn_fling_all"]="Fling All Players",["misc.btn_fling_hero"]="Fling Hero",["misc.btn_fling_innocents"]="Fling All Innocents",["misc.btn_fling_murderer"]="Fling Murderer",["misc.btn_fling_player"]="Fling Selected Player",["misc.btn_fling_sheriff"]="Fling Sheriff",["misc.fling_duration"]="Fling Duration (s)",["misc.invisible"]="Invisible",["misc.select_fling_player"]="Select Player to Fling",["misc.target_role"]="Target Role",["misc.touch_fling"]="Touch Fling",["player.antiafk"]="Anti-AFK",["player.antifling"]="Anti-Fling",["player.antivoid"]="Anti-Void",["player.fov"]="FOV",["player.fov_val"]="FOV Value",["player.gravity"]="Gravity",["player.gravity_val"]="Gravity Value",["player.hipheight"]="HipHeight",["player.hipheight_val"]="Height Value",["player.infinitejump"]="Infinite Jump",["player.invisible"]="Invisible",["player.jumppower"]="JumpPower",["player.jumppower_val"]="Jump Value",["player.noclip"]="Noclip",["player.walkspeed"]="WalkSpeed",["player.walkspeed_val"]="Speed Value",["settings.auto_detect"]="Auto-Detect Language",["settings.custom_cursor"]="Custom Cursor",["settings.language"]="Select Language",["settings.menu_keybind"]="Menu Keybind",["settings.unload_script"]="Unload Script",["tab.aimassist"]="Aim Assist",["tab.error"]="Error",["tab.home"]="Home",["tab.info"]="Info",["tab.interface"]="Interface",["tab.misc"]="Misc",["tab.player"]="Player",["tab.settings"]="Settings",["tab.teleports"]="Teleports",["tab.visuals"]="Visuals",["tp.auto_map_vote"]="Enable Auto Map Vote",["tp.btn_gun"]="Teleport to Gun Drop",["tp.btn_hero"]="Teleport to Hero",["tp.btn_innocent"]="Teleport to Innocent",["tp.btn_lobby"]="Teleport to Lobby",["tp.btn_map"]="Teleport to Map",["tp.btn_murderer"]="Teleport to Murderer",["tp.btn_player"]="Teleport to Selected Player",["tp.btn_sheriff"]="Teleport to Sheriff",["tp.preferred_map"]="Preferred Map",["tp.select_player"]="Select Player",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Chams Fill Transparency",["visuals.chams_outline"]="Chams Outline Transparency",["visuals.color"]="%s Color",["visuals.show_distance"]="Show Distance",["visuals.show_name"]="Show Name",["visuals.show_role"]="Show Role",["visuals.skeleton"]="Skeleton ESP",["visuals.tracers"]="Tracers ESP",["visuals.tracers_pos"]="Tracers Position",["coolwip.0"]="Combat",["coolwip.1"]="Auto Shoot Murderer",["coolwip.2"]="Limit Aim to Circle",["coolwip.3"]="Circle Opacity",["coolwip.4"]="Movement Prediction",["coolwip.5"]="Show Knife Range",["coolwip.6"]="Knife Speed Multiplier",["coolwip.7"]="Expose Roles in Chat",["coolwip.8"]="Expose Roles Keybind",["coolwip.9"]="Reset Floating Positions",["coolwip.10"]="Name & Info",["coolwip.11"]="Box ESP",["coolwip.12"]="Gun Aim",["coolwip.13"]="Knife Aim",["coolwip.label.Murderer Visuals"]="Murderer Visuals",["coolwip.label.Murderer Chams"]="Murderer Chams",["coolwip.label.Murderer ESP Color"]="Murderer ESP Color",["coolwip.label.Murderer Color"]="Murderer Color",["coolwip.label.Murderer Name & Info"]="Murderer Name & Info",["coolwip.label.Murderer Box ESP"]="Murderer Box ESP",["coolwip.label.Murderer Tracers"]="Murderer Tracers",["coolwip.label.Murderer Skeleton ESP"]="Murderer Skeleton ESP",["coolwip.label.Murderer Name"]="Murderer Name",["coolwip.label.Murderer Distance"]="Murderer Distance",["coolwip.label.Sheriff & Hero Visuals"]="Sheriff & Hero Visuals",["coolwip.label.Sheriff & Hero Chams"]="Sheriff & Hero Chams",["coolwip.label.Sheriff & Hero ESP Color"]="Sheriff & Hero ESP Color",["coolwip.label.Sheriff & Hero Color"]="Sheriff & Hero Color",["coolwip.label.Sheriff & Hero Name & Info"]="Sheriff & Hero Name & Info",["coolwip.label.Sheriff & Hero Box ESP"]="Sheriff & Hero Box ESP",["coolwip.label.Sheriff & Hero Tracers"]="Sheriff & Hero Tracers",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Sheriff & Hero Skeleton ESP",["coolwip.label.Sheriff & Hero Name"]="Sheriff & Hero Name",["coolwip.label.Sheriff & Hero Distance"]="Sheriff & Hero Distance",["coolwip.label.Innocent Visuals"]="Innocent Visuals",["coolwip.label.Innocent Chams"]="Innocent Chams",["coolwip.label.Innocent ESP Color"]="Innocent ESP Color",["coolwip.label.Innocent Color"]="Innocent Color",["coolwip.label.Innocent Name & Info"]="Innocent Name & Info",["coolwip.label.Innocent Box ESP"]="Innocent Box ESP",["coolwip.label.Innocent Tracers"]="Innocent Tracers",["coolwip.label.Innocent Skeleton ESP"]="Innocent Skeleton ESP",["coolwip.label.Innocent Name"]="Innocent Name",["coolwip.label.Innocent Distance"]="Innocent Distance",["coolwip.label.Gun Drop Visuals"]="Gun Drop Visuals",["coolwip.label.Gun Drop Chams"]="Gun Drop Chams",["coolwip.label.Gun Drop ESP Color"]="Gun Drop ESP Color",["coolwip.label.Gun Drop Color"]="Gun Drop Color",["coolwip.label.Gun Drop Name & Info"]="Gun Drop Name & Info",["coolwip.label.Gun Drop Box ESP"]="Gun Drop Box ESP",["coolwip.label.Gun Drop Tracers"]="Gun Drop Tracers",["coolwip.label.Gun Drop Skeleton ESP"]="Gun Drop Skeleton ESP",["coolwip.label.Gun Drop Name"]="Gun Drop Name",["coolwip.label.Gun Drop Distance"]="Gun Drop Distance"},["pt"]={["aim.auto_grab_gun"]="Pegar Arma Caída Automaticamente",["aim.auto_kill_all"]="Eliminar Todos Automaticamente",["aim.auto_ping"]="Ajuste Automático de Ping",["aim.auto_revenge"]="Vingança Automática (Modo Herói)",["aim.auto_throw"]="Lançar Faca Automaticamente",["aim.auto_throw_delay"]="Intervalo de Lançamento (s)",["aim.auto_throw_dist"]="Distância para Lançamento Automático",["aim.btn_kill_all"]="Eliminar Todos os Jogadores",["aim.btn_pickup_gun"]="Pegar Arma Caída",["aim.btn_shoot_murderer"]="Atirar no Assassino",["aim.btn_throw_knife"]="Lançar Faca",["aim.dynamic_fov"]="Escala Dinâmica do Círculo",["aim.enable_fov"]="Ativar Círculo de Alcance",["aim.fast_throw"]="Lançamento Rápido de Faca",["aim.fov_center_dot"]="Exibir Ponto Central no Círculo",["aim.fov_color"]="Cor do Círculo de Alcance",["aim.fov_filled"]="Preencher Círculo de Alcance",["aim.fov_radius"]="Raio do Círculo de Alcance",["aim.fov_rainbow"]="Círculo de Alcance Arco-Íris",["aim.fov_transparency"]="Transparência do Círculo",["aim.gun_aim_lock"]="Trava de Mira na Arma",["aim.gun_auto_equip"]="Equipar Arma Automaticamente",["aim.gun_method"]="Modo de Disparo da Arma",["aim.gun_silent_aim"]="Mira Silenciosa da Arma",["aim.highlight_target"]="Destacar Alvo Ativo",["aim.hit_chance"]="Chance de Acerto (%)",["aim.kill_aura"]="Aura de Eliminação Automática",["aim.kill_aura_delay"]="Intervalo da Aura de Eliminação (s)",["aim.kill_aura_range"]="Alcance da Aura de Eliminação",["aim.kill_aura_target_mode"]="Modo de Alvos da Aura",["aim.knife_aim_lock"]="Trava de Mira na Faca",["aim.knife_auto_equip"]="Equipar Faca Automaticamente",["aim.knife_method"]="Modo de Lançamento da Faca",["aim.knife_silent_aim"]="Mira Silenciosa da Faca",["aim.knife_speed"]="Velocidade da Faca",["aim.manual_ping"]="Ping Manual (ms)",["aim.ping_multiplier"]="Multiplicador de Previsão",["aim.prediction_dot_color"]="Cor do Ponto de Impacto",["aim.show_prediction_dot"]="Exibir Ponto Previsto de Impacto",["aim.show_target_tracer"]="Linha Rastreadora do Alvo",["aim.smoothness"]="Suavidade da Mira",["aim.target_highlight_color"]="Cor do Destaque do Alvo",["aim.target_part"]="Parte do Corpo Alvo",["aim.target_priority"]="Prioridade do Alvo",["aim.target_tracer_color"]="Cor da Linha Rastreadora",["aim.triggerbot"]="Disparo Automático ao Mirar",["aim.triggerbot_delay"]="Atraso do Disparo Automático (s)",["aim.triggerbot_visible_only"]="Disparo Automático Apenas Visível",["aim.wall_check"]="Verificar Obstáculos e Paredes",["group.configuration"]="Gerenciador de Configurações",["group.flingactions"]="Ações de Arremesso",["group.fovcircle"]="Círculo de Alcance",["group.generalaim"]="Configurações Gerais de Mira",["group.gunesp"]="ESP da Arma Caída",["group.heroesp"]="ESP do Herói",["group.innocentesp"]="ESP dos Inocentes",["group.innocentutil"]="Utilitários de Inocente",["group.layoutcustom"]="Personalização de Layout",["group.localization"]="Idioma & Localização",["group.menu"]="Menu Principal",["group.movement"]="Movimentação",["group.murderer"]="Funções do Assassino",["group.murdereresp"]="ESP do Assassino",["group.playerteleport"]="Teleporte para Jogador",["group.prediction"]="Compensação de Latência",["group.protection"]="Proteção do Jogador",["group.rolefling"]="Arremesso por Função",["group.roleteleports"]="Teleportes por Função",["group.sheriffesp"]="ESP do Xerife",["group.sheriffhero"]="Xerife & Herói",["group.themes"]="Temas & Cores",["group.trolling"]="Diversão & Zoeira",["group.uielements"]="Botões na Tela",["group.visualindicators"]="Indicadores Visuais",["group.world"]="Mundo & Ambiente",["group.worldteleports"]="Teleportes do Mapa",["interface.category_combat"]="Combate e Mira",["interface.category_misc"]="Diversos & Utilidades",["interface.category_player"]="Controles do Jogador",["interface.category_teleports"]="Teleportes",["interface.category_visuals"]="Visuais e ESP",["interface.edit_mode"]="Ativar Modo de Edição de Layout",["interface.floating_elements"]="Botões na Tela",["interface.reset_layout"]="Restaurar Posições Padrão",["interface.save_layout"]="Salvar Posições dos Botões",["misc.auto_fling"]="Arremesso Automático",["misc.btn_fling_all"]="Arremessar Todos os Jogadores",["misc.btn_fling_hero"]="Arremessar o Herói",["misc.btn_fling_innocents"]="Arremessar Todos os Inocentes",["misc.btn_fling_murderer"]="Arremessar o Assassino",["misc.btn_fling_player"]="Arremessar Jogador Selecionado",["misc.btn_fling_sheriff"]="Arremessar o Xerife",["misc.fling_duration"]="Duração do Arremesso (s)",["misc.invisible"]="Modo Invisível",["misc.select_fling_player"]="Selecionar Jogador para Arremessar",["misc.target_role"]="Função Alvo para Arremesso",["misc.touch_fling"]="Arremessar Jogadores ao Tocar",["player.antiafk"]="Proteção Anti-Ausência",["player.antifling"]="Proteção Anti-Arremesso",["player.antivoid"]="Proteção Anti-Queda no Vazio",["player.fov"]="Campo de Visão",["player.fov_val"]="Ajuste do Campo de Visão",["player.gravity"]="Gravidade",["player.gravity_val"]="Ajuste de Gravidade",["player.hipheight"]="Elevação do Personagem",["player.hipheight_val"]="Ajuste de Elevação",["player.infinitejump"]="Pulo Infinito",["player.invisible"]="Invisível",["player.jumppower"]="Altura do Pulo",["player.jumppower_val"]="Ajuste do Pulo",["player.noclip"]="Atravessar Paredes",["player.walkspeed"]="Velocidade de Movimento",["player.walkspeed_val"]="Ajuste de Velocidade",["settings.auto_detect"]="Detectar Idioma Automaticamente",["settings.custom_cursor"]="Cursor Personalizado",["settings.language"]="Selecionar Idioma",["settings.menu_keybind"]="Tecla de Atalho do Menu",["settings.unload_script"]="Descarregar Script",["tab.aimassist"]="Assistência de Mira",["tab.error"]="Erro",["tab.home"]="Início",["tab.info"]="Informações",["tab.interface"]="Interface",["tab.misc"]="Diversos",["tab.player"]="Jogador",["tab.settings"]="Configurações",["tab.teleports"]="Teleportes",["tab.visuals"]="Visuais",["tp.auto_map_vote"]="Ativar Voto Automático de Mapa",["tp.btn_gun"]="Teleportar para a Arma Caída",["tp.btn_hero"]="Teleportar para o Herói",["tp.btn_innocent"]="Teleportar para Inocente Aleatório",["tp.btn_lobby"]="Teleportar para o Lobby",["tp.btn_map"]="Teleportar para a Área do Mapa",["tp.btn_murderer"]="Teleportar para o Assassino",["tp.btn_player"]="Teleportar para Jogador Selecionado",["tp.btn_sheriff"]="Teleportar para o Xerife",["tp.preferred_map"]="Mapa Preferido para Votação",["tp.select_player"]="Selecionar Jogador Alvo",["visuals.chams"]="Destaque do Personagem",["visuals.chams_fill"]="Transparência do Preenchimento",["visuals.chams_outline"]="Transparência do Contorno",["visuals.color"]="Cor do %s",["visuals.show_distance"]="Exibir Distância",["visuals.show_name"]="Exibir Nome",["visuals.show_role"]="Exibir Função",["visuals.skeleton"]="Esqueleto do Jogador",["visuals.tracers"]="Linhas Rastreadoras",["visuals.tracers_pos"]="Origem das Linhas Rastreadoras",["coolwip.0"]="Combate",["coolwip.1"]="Atirar automaticamente no assassino",["coolwip.2"]="Limitar mira ao círculo",["coolwip.3"]="Opacidade do círculo",["coolwip.4"]="Previsão de movimento",["coolwip.5"]="Mostrar alcance da faca",["coolwip.6"]="Multiplicador de velocidade da faca",["coolwip.7"]="Revelar funções no chat",["coolwip.8"]="Tecla para revelar funções",["coolwip.9"]="Redefinir posições flutuantes",["coolwip.10"]="Nome e informações",["coolwip.11"]="Caixa ESP",["coolwip.12"]="Mira da arma",["coolwip.13"]="Mira da faca",["coolwip.label.Murderer Visuals"]="Assassino — Visuais",["coolwip.label.Murderer Chams"]="Assassino — Destaque do Personagem",["coolwip.label.Murderer ESP Color"]="Cor do Assassino",["coolwip.label.Murderer Color"]="Cor do Assassino",["coolwip.label.Murderer Name & Info"]="Assassino — Nome e informações",["coolwip.label.Murderer Box ESP"]="Assassino — Caixa ESP",["coolwip.label.Murderer Tracers"]="Assassino — Linhas Rastreadoras",["coolwip.label.Murderer Skeleton ESP"]="Assassino — Esqueleto do Jogador",["coolwip.label.Murderer Name"]="Assassino — Exibir Nome",["coolwip.label.Murderer Distance"]="Assassino — Exibir Distância",["coolwip.label.Sheriff & Hero Visuals"]="Xerife & Herói — Visuais",["coolwip.label.Sheriff & Hero Chams"]="Xerife & Herói — Destaque do Personagem",["coolwip.label.Sheriff & Hero ESP Color"]="Cor do Xerife & Herói",["coolwip.label.Sheriff & Hero Color"]="Cor do Xerife & Herói",["coolwip.label.Sheriff & Hero Name & Info"]="Xerife & Herói — Nome e informações",["coolwip.label.Sheriff & Hero Box ESP"]="Xerife & Herói — Caixa ESP",["coolwip.label.Sheriff & Hero Tracers"]="Xerife & Herói — Linhas Rastreadoras",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Xerife & Herói — Esqueleto do Jogador",["coolwip.label.Sheriff & Hero Name"]="Xerife & Herói — Exibir Nome",["coolwip.label.Sheriff & Hero Distance"]="Xerife & Herói — Exibir Distância",["coolwip.label.Innocent Visuals"]="Inocente — Visuais",["coolwip.label.Innocent Chams"]="Inocente — Destaque do Personagem",["coolwip.label.Innocent ESP Color"]="Cor do Inocente",["coolwip.label.Innocent Color"]="Cor do Inocente",["coolwip.label.Innocent Name & Info"]="Inocente — Nome e informações",["coolwip.label.Innocent Box ESP"]="Inocente — Caixa ESP",["coolwip.label.Innocent Tracers"]="Inocente — Linhas Rastreadoras",["coolwip.label.Innocent Skeleton ESP"]="Inocente — Esqueleto do Jogador",["coolwip.label.Innocent Name"]="Inocente — Exibir Nome",["coolwip.label.Innocent Distance"]="Inocente — Exibir Distância",["coolwip.label.Gun Drop Visuals"]="Arma Caída — Visuais",["coolwip.label.Gun Drop Chams"]="Arma Caída — Destaque do Personagem",["coolwip.label.Gun Drop ESP Color"]="Cor do Arma Caída",["coolwip.label.Gun Drop Color"]="Cor do Arma Caída",["coolwip.label.Gun Drop Name & Info"]="Arma Caída — Nome e informações",["coolwip.label.Gun Drop Box ESP"]="Arma Caída — Caixa ESP",["coolwip.label.Gun Drop Tracers"]="Arma Caída — Linhas Rastreadoras",["coolwip.label.Gun Drop Skeleton ESP"]="Arma Caída — Esqueleto do Jogador",["coolwip.label.Gun Drop Name"]="Arma Caída — Exibir Nome",["coolwip.label.Gun Drop Distance"]="Arma Caída — Exibir Distância"},["es"]={["aim.auto_grab_gun"]="Recoger Arma Automáticamente",["aim.auto_kill_all"]="Auto Eliminar a Todos",["aim.auto_ping"]="Ping Automático",["aim.auto_revenge"]="Venganza Automática (Modo Héroe)",["aim.auto_throw"]="Lanzar Cuchillo Automáticamente",["aim.auto_throw_delay"]="Intervalo de Lanzamiento (s)",["aim.auto_throw_dist"]="Distancia de Lanzamiento Auto",["aim.btn_kill_all"]="Eliminar a Todos",["aim.btn_pickup_gun"]="Recoger Arma",["aim.btn_shoot_murderer"]="Disparar al Asesino",["aim.btn_throw_knife"]="Lanzar Cuchillo",["aim.dynamic_fov"]="Escala Dinámica de FOV",["aim.enable_fov"]="Activar Círculo de FOV",["aim.fast_throw"]="Lanzamiento Rápido de Cuchillo",["aim.fov_center_dot"]="Mostrar Punto Central FOV",["aim.fov_color"]="Color de Círculo FOV",["aim.fov_filled"]="Círculo FOV Relleno",["aim.fov_radius"]="Radio de FOV",["aim.fov_rainbow"]="Círculo FOV Arcoíris",["aim.fov_transparency"]="Transparencia de FOV",["aim.gun_aim_lock"]="Fijar Apuntado de Pistola",["aim.gun_auto_equip"]="Equipar Arma Automáticamente",["aim.gun_method"]="Método de Pistola",["aim.gun_silent_aim"]="Silent Aim de Pistola",["aim.highlight_target"]="Destacar Objetivo Activo",["aim.hit_chance"]="Probabilidad de Acierto (%)",["aim.kill_aura"]="Kill Aura",["aim.kill_aura_delay"]="Intervalo de Kill Aura (s)",["aim.kill_aura_range"]="Rango de Kill Aura",["aim.kill_aura_target_mode"]="Modo de Objetivos de Kill Aura",["aim.knife_aim_lock"]="Fijar Apuntado de Cuchillo",["aim.knife_auto_equip"]="Equipar Cuchillo Automáticamente",["aim.knife_method"]="Método de Cuchillo",["aim.knife_silent_aim"]="Silent Aim de Cuchillo",["aim.knife_speed"]="Velocidad de Lanzamiento",["aim.manual_ping"]="Ping Manual (ms)",["aim.ping_multiplier"]="Multiplicador de Ping",["aim.prediction_dot_color"]="Color del Punto Previsto",["aim.show_prediction_dot"]="Mostrar Punto Previsto de Impacto",["aim.show_target_tracer"]="Línea Rastreadora del Objetivo",["aim.smoothness"]="Suavizado de Apuntado",["aim.target_highlight_color"]="Color de Destaque del Objetivo",["aim.target_part"]="Parte del Cuerpo Objetivo",["aim.target_priority"]="Prioridad del Objetivo",["aim.target_tracer_color"]="Color de Línea del Objetivo",["aim.triggerbot"]="Disparo Automático",["aim.triggerbot_delay"]="Retardo de Disparo Auto (s)",["aim.triggerbot_visible_only"]="Disparo Auto Solo Visible",["aim.wall_check"]="Comprobación de Pared",["group.configuration"]="Configuración",["group.flingactions"]="Acciones de Fling",["group.fovcircle"]="Círculo de FOV",["group.generalaim"]="Ajustes Generales",["group.gunesp"]="ESP Arma Caída",["group.heroesp"]="ESP Héroe",["group.innocentesp"]="ESP Inocente",["group.innocentutil"]="Utilidades de Inocente",["group.layoutcustom"]="Personalización de Diseño",["group.localization"]="Idioma y Localización",["group.menu"]="Menú",["group.movement"]="Movimiento",["group.murderer"]="Asesino",["group.murdereresp"]="ESP Asesino",["group.playerteleport"]="Teletransporte a Jugador",["group.prediction"]="Predicción de Ping",["group.protection"]="Protección",["group.rolefling"]="Fling por Rol",["group.roleteleports"]="Teletransporte por Rol",["group.sheriffesp"]="ESP Sheriff",["group.sheriffhero"]="Sheriff y Héroe",["group.themes"]="Temas",["group.trolling"]="Trolling",["group.uielements"]="Elementos de Interfaz",["group.visualindicators"]="Indicadores Visuales",["group.world"]="Mundo",["group.worldteleports"]="Teletransportes de Mundo",["interface.category_combat"]="Combate & Apuntado",["interface.category_misc"]="Varios",["interface.category_player"]="Controles del Jugador",["interface.category_teleports"]="Teletransporte",["interface.category_visuals"]="Visuales & ESP",["interface.edit_mode"]="Activar Modo Edición",["interface.floating_elements"]="Elementos Flotantes",["interface.reset_layout"]="Restablecer Diseño Predeterminado",["interface.save_layout"]="Guardar Diseño",["misc.auto_fling"]="Auto Fling",["misc.btn_fling_all"]="Hacer Fling a Todos",["misc.btn_fling_hero"]="Fling al Héroe",["misc.btn_fling_innocents"]="Fling a Todos los Inocentes",["misc.btn_fling_murderer"]="Fling al Asesino",["misc.btn_fling_player"]="Hacer Fling al Jugador",["misc.btn_fling_sheriff"]="Fling al Sheriff",["misc.fling_duration"]="Duración del Fling (s)",["misc.invisible"]="Invisible",["misc.select_fling_player"]="Seleccionar Jugador para Fling",["misc.target_role"]="Rol Objetivo",["misc.touch_fling"]="Fling al Tocar",["player.antiafk"]="Anti-AFK",["player.antifling"]="Anti-Fling",["player.antivoid"]="Anti-Caída",["player.fov"]="Campo de Visión",["player.fov_val"]="Valor de FOV",["player.gravity"]="Gravedad",["player.gravity_val"]="Valor de Gravedad",["player.hipheight"]="Altura de Cadera",["player.hipheight_val"]="Valor de Altura",["player.infinitejump"]="Salto Infinito",["player.invisible"]="Invisible",["player.jumppower"]="Poder de Salto",["player.jumppower_val"]="Valor de Salto",["player.noclip"]="Atravesar Paredes",["player.walkspeed"]="Velocidad",["player.walkspeed_val"]="Valor de Velocidad",["settings.auto_detect"]="Detectar Idioma Automáticamente",["settings.custom_cursor"]="Cursor Personalizado",["settings.language"]="Seleccionar Idioma",["settings.menu_keybind"]="Tecla del Menú",["settings.unload_script"]="Descargar Script",["tab.aimassist"]="Asistencia de Apuntado",["tab.error"]="Error",["tab.home"]="Inicio",["tab.info"]="Información",["tab.interface"]="Interfaz",["tab.misc"]="Varios",["tab.player"]="Jugador",["tab.settings"]="Ajustes",["tab.teleports"]="Teletransportes",["tab.visuals"]="Visuales",["tp.auto_map_vote"]="Activar Auto Voto de Mapa",["tp.btn_gun"]="Teletransportar a Arma Caída",["tp.btn_hero"]="Teletransportar al Héroe",["tp.btn_innocent"]="Teletransportar a Inocente",["tp.btn_lobby"]="Teletransportar al Lobby",["tp.btn_map"]="Teletransportar al Mapa",["tp.btn_murderer"]="Teletransportar al Asesino",["tp.btn_player"]="Teletransportar al Jugador",["tp.btn_sheriff"]="Teletransportar al Sheriff",["tp.preferred_map"]="Mapa Preferido",["tp.select_player"]="Seleccionar Jugador",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Transparencia de Relleno",["visuals.chams_outline"]="Transparencia de Borde",["visuals.color"]="Color de %s",["visuals.show_distance"]="Mostrar Distancia",["visuals.show_name"]="Mostrar Nombre",["visuals.show_role"]="Mostrar Rol",["visuals.skeleton"]="Esqueleto ESP",["visuals.tracers"]="Trazadores ESP",["visuals.tracers_pos"]="Posición de Trazadores",["coolwip.0"]="Combate",["coolwip.1"]="Disparar automáticamente al asesino",["coolwip.2"]="Limitar la puntería al círculo",["coolwip.3"]="Opacidad del círculo",["coolwip.4"]="Predicción de movimiento",["coolwip.5"]="Mostrar alcance del cuchillo",["coolwip.6"]="Multiplicador de velocidad del cuchillo",["coolwip.7"]="Revelar roles en el chat",["coolwip.8"]="Tecla para revelar roles",["coolwip.9"]="Restablecer posiciones flotantes",["coolwip.10"]="Nombre e información",["coolwip.11"]="Caja ESP",["coolwip.12"]="Puntería del arma",["coolwip.13"]="Puntería del cuchillo",["coolwip.label.Murderer Visuals"]="Asesino — Visuales",["coolwip.label.Murderer Chams"]="Asesino — Chams ESP",["coolwip.label.Murderer ESP Color"]="Color de Asesino",["coolwip.label.Murderer Color"]="Color de Asesino",["coolwip.label.Murderer Name & Info"]="Asesino — Nombre e información",["coolwip.label.Murderer Box ESP"]="Asesino — Caja ESP",["coolwip.label.Murderer Tracers"]="Asesino — Trazadores ESP",["coolwip.label.Murderer Skeleton ESP"]="Asesino — Esqueleto ESP",["coolwip.label.Murderer Name"]="Asesino — Mostrar Nombre",["coolwip.label.Murderer Distance"]="Asesino — Mostrar Distancia",["coolwip.label.Sheriff & Hero Visuals"]="Sheriff y Héroe — Visuales",["coolwip.label.Sheriff & Hero Chams"]="Sheriff y Héroe — Chams ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Color de Sheriff y Héroe",["coolwip.label.Sheriff & Hero Color"]="Color de Sheriff y Héroe",["coolwip.label.Sheriff & Hero Name & Info"]="Sheriff y Héroe — Nombre e información",["coolwip.label.Sheriff & Hero Box ESP"]="Sheriff y Héroe — Caja ESP",["coolwip.label.Sheriff & Hero Tracers"]="Sheriff y Héroe — Trazadores ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Sheriff y Héroe — Esqueleto ESP",["coolwip.label.Sheriff & Hero Name"]="Sheriff y Héroe — Mostrar Nombre",["coolwip.label.Sheriff & Hero Distance"]="Sheriff y Héroe — Mostrar Distancia",["coolwip.label.Innocent Visuals"]="Inocente — Visuales",["coolwip.label.Innocent Chams"]="Inocente — Chams ESP",["coolwip.label.Innocent ESP Color"]="Color de Inocente",["coolwip.label.Innocent Color"]="Color de Inocente",["coolwip.label.Innocent Name & Info"]="Inocente — Nombre e información",["coolwip.label.Innocent Box ESP"]="Inocente — Caja ESP",["coolwip.label.Innocent Tracers"]="Inocente — Trazadores ESP",["coolwip.label.Innocent Skeleton ESP"]="Inocente — Esqueleto ESP",["coolwip.label.Innocent Name"]="Inocente — Mostrar Nombre",["coolwip.label.Innocent Distance"]="Inocente — Mostrar Distancia",["coolwip.label.Gun Drop Visuals"]="Arma Caída — Visuales",["coolwip.label.Gun Drop Chams"]="Arma Caída — Chams ESP",["coolwip.label.Gun Drop ESP Color"]="Color de Arma Caída",["coolwip.label.Gun Drop Color"]="Color de Arma Caída",["coolwip.label.Gun Drop Name & Info"]="Arma Caída — Nombre e información",["coolwip.label.Gun Drop Box ESP"]="Arma Caída — Caja ESP",["coolwip.label.Gun Drop Tracers"]="Arma Caída — Trazadores ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Arma Caída — Esqueleto ESP",["coolwip.label.Gun Drop Name"]="Arma Caída — Mostrar Nombre",["coolwip.label.Gun Drop Distance"]="Arma Caída — Mostrar Distancia"},["ru"]={["aim.auto_grab_gun"]="Авто-Подбор Оружия",["aim.auto_kill_all"]="Авто-Убийство Всех",["aim.auto_ping"]="Авто-Пинг",["aim.auto_revenge"]="Авто-Месть (Режим Героя)",["aim.auto_throw"]="Авто-Бросок Ножа",["aim.auto_throw_delay"]="Перезарядка Авто-Броска (s)",["aim.auto_throw_dist"]="Дистанция Авто-Броска",["aim.btn_kill_all"]="Убить Всех Игроков",["aim.btn_pickup_gun"]="Подобрать Оружие",["aim.btn_shoot_murderer"]="Выстрелить в Убийцу",["aim.btn_throw_knife"]="Бросить Нож",["aim.dynamic_fov"]="Динамический Масштаб FOV",["aim.enable_fov"]="Включить Круг FOV",["aim.fast_throw"]="Быстрый Бросок Ножа",["aim.fov_center_dot"]="Точка в Центре FOV",["aim.fov_color"]="Цвет Круга FOV",["aim.fov_filled"]="Заполненный Круг FOV",["aim.fov_radius"]="Радиус FOV",["aim.fov_rainbow"]="Радужный Круг FOV",["aim.fov_transparency"]="Прозрачность FOV",["aim.gun_aim_lock"]="Лок Аима Оружия",["aim.gun_auto_equip"]="Авто-Экипировка Оружия",["aim.gun_method"]="Метод Стрельбы",["aim.gun_silent_aim"]="Сайлент Аим Оружия",["aim.highlight_target"]="Подсветка Активной Цели",["aim.hit_chance"]="Шанс Попадания (%)",["aim.kill_aura"]="Килл Аура",["aim.kill_aura_delay"]="Интервал Килл Ауры (s)",["aim.kill_aura_range"]="Радиус Килл Ауры",["aim.kill_aura_target_mode"]="Режим Целей Килл Ауры",["aim.knife_aim_lock"]="Лок Аима Ножа",["aim.knife_auto_equip"]="Авто-Экипировка Ножа",["aim.knife_method"]="Метод Ножа",["aim.knife_silent_aim"]="Сайлент Аим Ножа",["aim.knife_speed"]="Скорость Броска",["aim.manual_ping"]="Ручной Пинг (ms)",["aim.ping_multiplier"]="Множитель Пинга",["aim.prediction_dot_color"]="Цвет Точки Предикшна",["aim.show_prediction_dot"]="Точка Предикшна Попадания",["aim.show_target_tracer"]="Линия Трейсера к Цели",["aim.smoothness"]="Плавность Аима",["aim.target_highlight_color"]="Цвет Подсветки Цели",["aim.target_part"]="Часть Тела Цели",["aim.target_priority"]="Приоритет Цели",["aim.target_tracer_color"]="Цвет Линии Трейсера",["aim.triggerbot"]="Авто-Выстрел",["aim.triggerbot_delay"]="Задержка Авто-Выстрела (s)",["aim.triggerbot_visible_only"]="Выстрел Только по Видимым",["aim.wall_check"]="Проверка Стен",["group.configuration"]="Конфигурация",["group.flingactions"]="Действия Флинга",["group.fovcircle"]="Круг FOV",["group.generalaim"]="Основные Настройки",["group.gunesp"]="ESP Оружия",["group.heroesp"]="ESP Героя",["group.innocentesp"]="ESP Невинных",["group.innocentutil"]="Утилиты Невинного",["group.layoutcustom"]="Настройка Макета",["group.localization"]="Язык и Локализация",["group.menu"]="Меню",["group.movement"]="Движение",["group.murderer"]="Убийца",["group.murdereresp"]="ESP Убийцы",["group.playerteleport"]="Телепорт к Игроку",["group.prediction"]="Предикшн Пинга",["group.protection"]="Защита",["group.rolefling"]="Флинг по Ролям",["group.roleteleports"]="Телепорты по Ролям",["group.sheriffesp"]="ESP Шерифа",["group.sheriffhero"]="Шериф и Герой",["group.themes"]="Темы",["group.trolling"]="Троллинг",["group.uielements"]="Элементы Интерфейса",["group.visualindicators"]="Визуальные Индикаторы",["group.world"]="Окружение",["group.worldteleports"]="Телепорты по Миру",["interface.category_combat"]="Бой & Аим",["interface.category_misc"]="Разное",["interface.category_player"]="Управление Игроком",["interface.category_teleports"]="Телепортация",["interface.category_visuals"]="Визуалы & ESP",["interface.edit_mode"]="Включить Режим Редактирования",["interface.floating_elements"]="Плавающие Элементы",["interface.reset_layout"]="Сбросить Макет по Умолчанию",["interface.save_layout"]="Сохранить Макет",["misc.auto_fling"]="Авто-Флинг",["misc.btn_fling_all"]="Флингнуть Всех Игроков",["misc.btn_fling_hero"]="Флингнуть Героя",["misc.btn_fling_innocents"]="Флингнуть Всех Невинных",["misc.btn_fling_murderer"]="Флингнуть Убийцу",["misc.btn_fling_player"]="Флингнуть Выбранного Игрока",["misc.btn_fling_sheriff"]="Флингнуть Шерифа",["misc.fling_duration"]="Длительность Флинга (s)",["misc.invisible"]="Невидимость",["misc.select_fling_player"]="Выбрать Игрока для Флинга",["misc.target_role"]="Целевая Роль",["misc.touch_fling"]="Флинг при Касании",["player.antiafk"]="Анти-АФК",["player.antifling"]="Анти-Флинг",["player.antivoid"]="Анти-Падение",["player.fov"]="Поле Зрения",["player.fov_val"]="Значение FOV",["player.gravity"]="Гравитация",["player.gravity_val"]="Значение Гравитации",["player.hipheight"]="Высота тела",["player.hipheight_val"]="Значение Высоты",["player.infinitejump"]="Бесконечный Прыжок",["player.invisible"]="Невидимость",["player.jumppower"]="Сила прыжка",["player.jumppower_val"]="Значение Прыжка",["player.noclip"]="Сквозь стены",["player.walkspeed"]="Скорость ходьбы",["player.walkspeed_val"]="Значение Скорости",["settings.auto_detect"]="Автоопределение Языка",["settings.custom_cursor"]="Кастомный Курсор",["settings.language"]="Выбрать Язык",["settings.menu_keybind"]="Клавиша Меню",["settings.unload_script"]="Выгрузить Скрипт",["tab.aimassist"]="Аимбот",["tab.error"]="Ошибка",["tab.home"]="Главная",["tab.info"]="Информация",["tab.interface"]="Интерфейс",["tab.misc"]="Разное",["tab.player"]="Игрок",["tab.settings"]="Настройки",["tab.teleports"]="Телепорты",["tab.visuals"]="Визуалы",["tp.auto_map_vote"]="Включить Авто-Голосование",["tp.btn_gun"]="Телепорт к Оружию",["tp.btn_hero"]="Телепорт к Герою",["tp.btn_innocent"]="Телепорт к Невинному",["tp.btn_lobby"]="Телепорт в Лобби",["tp.btn_map"]="Телепорт на Карту",["tp.btn_murderer"]="Телепорт к Убийце",["tp.btn_player"]="Телепорт к Выбранному Игроку",["tp.btn_sheriff"]="Телепорт к Шерифу",["tp.preferred_map"]="Предпочитаемая Карта",["tp.select_player"]="Выбрать Игрока",["visuals.chams"]="Чамсы ESP",["visuals.chams_fill"]="Прозрачность Заливки",["visuals.chams_outline"]="Прозрачность Контура",["visuals.color"]="Цвет %s",["visuals.show_distance"]="Показывать Дистанцию",["visuals.show_name"]="Показывать Имя",["visuals.show_role"]="Показывать Роль",["visuals.skeleton"]="Скелет ESP",["visuals.tracers"]="Трейсеры ESP",["visuals.tracers_pos"]="Позиция Трейсеров",["coolwip.0"]="Бой",["coolwip.1"]="Автоматически стрелять в убийцу",["coolwip.2"]="Ограничить прицеливание кругом",["coolwip.3"]="Непрозрачность круга",["coolwip.4"]="Прогноз движения",["coolwip.5"]="Показать дальность ножа",["coolwip.6"]="Множитель скорости ножа",["coolwip.7"]="Раскрыть роли в чате",["coolwip.8"]="Клавиша раскрытия ролей",["coolwip.9"]="Сбросить позиции плавающих элементов",["coolwip.10"]="Имя и сведения",["coolwip.11"]="Рамка ESP",["coolwip.12"]="Прицеливание пистолетом",["coolwip.13"]="Прицеливание ножом",["coolwip.label.Murderer Visuals"]="Убийца — Визуалы",["coolwip.label.Murderer Chams"]="Убийца — Чамсы ESP",["coolwip.label.Murderer ESP Color"]="Цвет Убийца",["coolwip.label.Murderer Color"]="Цвет Убийца",["coolwip.label.Murderer Name & Info"]="Убийца — Имя и сведения",["coolwip.label.Murderer Box ESP"]="Убийца — Рамка ESP",["coolwip.label.Murderer Tracers"]="Убийца — Трейсеры ESP",["coolwip.label.Murderer Skeleton ESP"]="Убийца — Скелет ESP",["coolwip.label.Murderer Name"]="Убийца — Показывать Имя",["coolwip.label.Murderer Distance"]="Убийца — Показывать Дистанцию",["coolwip.label.Sheriff & Hero Visuals"]="Шериф и Герой — Визуалы",["coolwip.label.Sheriff & Hero Chams"]="Шериф и Герой — Чамсы ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Цвет Шериф и Герой",["coolwip.label.Sheriff & Hero Color"]="Цвет Шериф и Герой",["coolwip.label.Sheriff & Hero Name & Info"]="Шериф и Герой — Имя и сведения",["coolwip.label.Sheriff & Hero Box ESP"]="Шериф и Герой — Рамка ESP",["coolwip.label.Sheriff & Hero Tracers"]="Шериф и Герой — Трейсеры ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Шериф и Герой — Скелет ESP",["coolwip.label.Sheriff & Hero Name"]="Шериф и Герой — Показывать Имя",["coolwip.label.Sheriff & Hero Distance"]="Шериф и Герой — Показывать Дистанцию",["coolwip.label.Innocent Visuals"]="Невинный — Визуалы",["coolwip.label.Innocent Chams"]="Невинный — Чамсы ESP",["coolwip.label.Innocent ESP Color"]="Цвет Невинный",["coolwip.label.Innocent Color"]="Цвет Невинный",["coolwip.label.Innocent Name & Info"]="Невинный — Имя и сведения",["coolwip.label.Innocent Box ESP"]="Невинный — Рамка ESP",["coolwip.label.Innocent Tracers"]="Невинный — Трейсеры ESP",["coolwip.label.Innocent Skeleton ESP"]="Невинный — Скелет ESP",["coolwip.label.Innocent Name"]="Невинный — Показывать Имя",["coolwip.label.Innocent Distance"]="Невинный — Показывать Дистанцию",["coolwip.label.Gun Drop Visuals"]="Оружие — Визуалы",["coolwip.label.Gun Drop Chams"]="Оружие — Чамсы ESP",["coolwip.label.Gun Drop ESP Color"]="Цвет Оружие",["coolwip.label.Gun Drop Color"]="Цвет Оружие",["coolwip.label.Gun Drop Name & Info"]="Оружие — Имя и сведения",["coolwip.label.Gun Drop Box ESP"]="Оружие — Рамка ESP",["coolwip.label.Gun Drop Tracers"]="Оружие — Трейсеры ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Оружие — Скелет ESP",["coolwip.label.Gun Drop Name"]="Оружие — Показывать Имя",["coolwip.label.Gun Drop Distance"]="Оружие — Показывать Дистанцию"},["zh"]={["aim.auto_grab_gun"]="自动拾取掉落枪支",["aim.auto_kill_all"]="自动全图斩杀",["aim.auto_ping"]="自动网络延迟",["aim.auto_revenge"]="自动复仇 (英雄模式)",["aim.auto_throw"]="自动投掷飞刀",["aim.auto_throw_delay"]="自动扔刀冷却 (秒)",["aim.auto_throw_dist"]="自动投掷距离",["aim.btn_kill_all"]="击杀全场玩家",["aim.btn_pickup_gun"]="拾取掉落枪支",["aim.btn_shoot_murderer"]="射击杀手",["aim.btn_throw_knife"]="投掷飞刀",["aim.dynamic_fov"]="动态自瞄范围",["aim.enable_fov"]="开启自瞄范围圈",["aim.fast_throw"]="极速飞刀投掷",["aim.fov_center_dot"]="显示中心准心点",["aim.fov_color"]="范围圈颜色",["aim.fov_filled"]="填充范围圈",["aim.fov_radius"]="自瞄范围半径",["aim.fov_rainbow"]="彩虹自瞄范围圈",["aim.fov_transparency"]="范围圈透明度",["aim.gun_aim_lock"]="枪械锁定自瞄",["aim.gun_auto_equip"]="自动装备枪支",["aim.gun_method"]="射击模式",["aim.gun_silent_aim"]="枪械静默自瞄",["aim.highlight_target"]="高亮锁定目标",["aim.hit_chance"]="命中概率 (%)",["aim.kill_aura"]="自动斩杀光环",["aim.kill_aura_delay"]="杀戮光环间隔 (秒)",["aim.kill_aura_range"]="斩杀光环范围",["aim.kill_aura_target_mode"]="杀戮光环目标模式",["aim.knife_aim_lock"]="飞刀锁定自瞄",["aim.knife_auto_equip"]="自动装备飞刀",["aim.knife_method"]="飞刀模式",["aim.knife_silent_aim"]="飞刀静默自瞄",["aim.knife_speed"]="飞刀投掷速度",["aim.manual_ping"]="手动延迟 (ms)",["aim.ping_multiplier"]="延迟倍率",["aim.prediction_dot_color"]="预判落点颜色",["aim.show_prediction_dot"]="显示预判落点",["aim.show_target_tracer"]="目标示踪连线",["aim.smoothness"]="自瞄平滑度",["aim.target_highlight_color"]="目标高亮颜色",["aim.target_part"]="自瞄目标部位",["aim.target_priority"]="目标优先级",["aim.target_tracer_color"]="目标连线颜色",["aim.triggerbot"]="自动射击扳机",["aim.triggerbot_delay"]="自动开枪延迟 (秒)",["aim.triggerbot_visible_only"]="仅可见时自动开火",["aim.wall_check"]="掩体遮挡检测",["group.configuration"]="配置管理",["group.flingactions"]="飞天打击",["group.fovcircle"]="自瞄范围圈",["group.generalaim"]="常规自瞄设置",["group.gunesp"]="掉落枪支透视",["group.heroesp"]="英雄透视",["group.innocentesp"]="平民透视",["group.innocentutil"]="平民辅助工具",["group.layoutcustom"]="悬浮窗布局定制",["group.localization"]="语言与本地化",["group.menu"]="菜单主控",["group.movement"]="移动属性",["group.murderer"]="杀手功能",["group.murdereresp"]="杀手透视",["group.playerteleport"]="玩家传送",["group.prediction"]="网络延迟预判",["group.protection"]="安全防护",["group.rolefling"]="职业飞天",["group.roleteleports"]="职业传送",["group.sheriffesp"]="警长透视",["group.sheriffhero"]="警长与英雄",["group.themes"]="主题设置",["group.trolling"]="恶作剧娱乐",["group.uielements"]="界面小组件",["group.visualindicators"]="视觉指示器",["group.world"]="世界环境",["group.worldteleports"]="世界传送",["interface.category_combat"]="战斗自瞄",["interface.category_misc"]="其他杂项",["interface.category_player"]="玩家控制",["interface.category_teleports"]="传送功能",["interface.category_visuals"]="视觉透视",["interface.edit_mode"]="开启编辑模式",["interface.floating_elements"]="悬浮小组件",["interface.reset_layout"]="恢复默认布局",["interface.save_layout"]="保存布局",["misc.auto_fling"]="自动飞天循环",["misc.btn_fling_all"]="飞天全场玩家",["misc.btn_fling_hero"]="飞天英雄",["misc.btn_fling_innocents"]="飞天所有平民",["misc.btn_fling_murderer"]="飞天杀手",["misc.btn_fling_player"]="飞天选定玩家",["misc.btn_fling_sheriff"]="飞天警长",["misc.fling_duration"]="飞天持续时间 (s)",["misc.invisible"]="全隐身模式",["misc.select_fling_player"]="选择飞天目标",["misc.target_role"]="目标职业",["misc.touch_fling"]="触碰即飞天",["player.antiafk"]="防挂机掉线",["player.antifling"]="防碰撞打击",["player.antivoid"]="防掉虚空",["player.fov"]="视野广角",["player.fov_val"]="视野数值",["player.gravity"]="重力控制",["player.gravity_val"]="重力数值",["player.hipheight"]="浮空高度",["player.hipheight_val"]="高度数值",["player.infinitejump"]="无限跳跃",["player.invisible"]="隐身模式",["player.jumppower"]="跳跃高度",["player.jumppower_val"]="跳跃数值",["player.noclip"]="穿墙模式",["player.walkspeed"]="移动速度",["player.walkspeed_val"]="速度数值",["settings.auto_detect"]="自动识别语言",["settings.custom_cursor"]="自定义鼠标指针",["settings.language"]="选择语言",["settings.menu_keybind"]="菜单快捷键",["settings.unload_script"]="卸载脚本",["tab.aimassist"]="自瞄辅助",["tab.error"]="运行错误",["tab.home"]="主页",["tab.info"]="关于信息",["tab.interface"]="悬浮界面",["tab.misc"]="其他杂项",["tab.player"]="玩家",["tab.settings"]="全局设置",["tab.teleports"]="传送功能",["tab.visuals"]="视觉透视",["tp.auto_map_vote"]="开启自动地图投票",["tp.btn_gun"]="传送到掉落枪支",["tp.btn_hero"]="传送到英雄",["tp.btn_innocent"]="传送到平民",["tp.btn_lobby"]="传送到大厅",["tp.btn_map"]="传送到地图",["tp.btn_murderer"]="传送到杀手",["tp.btn_player"]="传送到所选玩家",["tp.btn_sheriff"]="传送到警长",["tp.preferred_map"]="首选地图",["tp.select_player"]="选择目标玩家",["visuals.chams"]="人物发光",["visuals.chams_fill"]="发光填充透明度",["visuals.chams_outline"]="发光轮廓透明度",["visuals.color"]="%s 颜色",["visuals.show_distance"]="显示目标距离",["visuals.show_name"]="显示玩家名称",["visuals.show_role"]="显示职业身份",["visuals.skeleton"]="骨骼线条",["visuals.tracers"]="射线追踪",["visuals.tracers_pos"]="射线起点位置",["coolwip.0"]="战斗",["coolwip.1"]="自动射击凶手",["coolwip.2"]="将瞄准限制在圆圈内",["coolwip.3"]="圆圈不透明度",["coolwip.4"]="移动预测",["coolwip.5"]="显示飞刀范围",["coolwip.6"]="飞刀速度倍率",["coolwip.7"]="在聊天中公布角色",["coolwip.8"]="公布角色快捷键",["coolwip.9"]="重置浮动控件位置",["coolwip.10"]="名称和信息",["coolwip.11"]="方框透视",["coolwip.12"]="枪械瞄准",["coolwip.13"]="飞刀瞄准",["coolwip.label.Murderer Visuals"]="杀手 — 视觉透视",["coolwip.label.Murderer Chams"]="杀手 — 人物发光",["coolwip.label.Murderer ESP Color"]="杀手 颜色",["coolwip.label.Murderer Color"]="杀手 颜色",["coolwip.label.Murderer Name & Info"]="杀手 — 名称和信息",["coolwip.label.Murderer Box ESP"]="杀手 — 方框透视",["coolwip.label.Murderer Tracers"]="杀手 — 射线追踪",["coolwip.label.Murderer Skeleton ESP"]="杀手 — 骨骼线条",["coolwip.label.Murderer Name"]="杀手 — 显示玩家名称",["coolwip.label.Murderer Distance"]="杀手 — 显示目标距离",["coolwip.label.Sheriff & Hero Visuals"]="警长与英雄 — 视觉透视",["coolwip.label.Sheriff & Hero Chams"]="警长与英雄 — 人物发光",["coolwip.label.Sheriff & Hero ESP Color"]="警长与英雄 颜色",["coolwip.label.Sheriff & Hero Color"]="警长与英雄 颜色",["coolwip.label.Sheriff & Hero Name & Info"]="警长与英雄 — 名称和信息",["coolwip.label.Sheriff & Hero Box ESP"]="警长与英雄 — 方框透视",["coolwip.label.Sheriff & Hero Tracers"]="警长与英雄 — 射线追踪",["coolwip.label.Sheriff & Hero Skeleton ESP"]="警长与英雄 — 骨骼线条",["coolwip.label.Sheriff & Hero Name"]="警长与英雄 — 显示玩家名称",["coolwip.label.Sheriff & Hero Distance"]="警长与英雄 — 显示目标距离",["coolwip.label.Innocent Visuals"]="平民 — 视觉透视",["coolwip.label.Innocent Chams"]="平民 — 人物发光",["coolwip.label.Innocent ESP Color"]="平民 颜色",["coolwip.label.Innocent Color"]="平民 颜色",["coolwip.label.Innocent Name & Info"]="平民 — 名称和信息",["coolwip.label.Innocent Box ESP"]="平民 — 方框透视",["coolwip.label.Innocent Tracers"]="平民 — 射线追踪",["coolwip.label.Innocent Skeleton ESP"]="平民 — 骨骼线条",["coolwip.label.Innocent Name"]="平民 — 显示玩家名称",["coolwip.label.Innocent Distance"]="平民 — 显示目标距离",["coolwip.label.Gun Drop Visuals"]="掉落枪支 — 视觉透视",["coolwip.label.Gun Drop Chams"]="掉落枪支 — 人物发光",["coolwip.label.Gun Drop ESP Color"]="掉落枪支 颜色",["coolwip.label.Gun Drop Color"]="掉落枪支 颜色",["coolwip.label.Gun Drop Name & Info"]="掉落枪支 — 名称和信息",["coolwip.label.Gun Drop Box ESP"]="掉落枪支 — 方框透视",["coolwip.label.Gun Drop Tracers"]="掉落枪支 — 射线追踪",["coolwip.label.Gun Drop Skeleton ESP"]="掉落枪支 — 骨骼线条",["coolwip.label.Gun Drop Name"]="掉落枪支 — 显示玩家名称",["coolwip.label.Gun Drop Distance"]="掉落枪支 — 显示目标距离"},["vi"]={["aim.auto_grab_gun"]="Tự nhặt súng rơi",["aim.auto_kill_all"]="Tự động tiêu diệt tất cả",["aim.auto_ping"]="Ping tự động",["aim.auto_revenge"]="Tự Báo Thù (Chế Độ Anh Hùng)",["aim.auto_throw"]="Tự động ném dao",["aim.auto_throw_delay"]="Hồi Chiêu Tự Ném Dao (giây)",["aim.auto_throw_dist"]="Khoảng cách tự ném",["aim.btn_kill_all"]="Tiêu diệt tất cả",["aim.btn_pickup_gun"]="Nhặt súng rơi",["aim.btn_shoot_murderer"]="Bắn sát thủ",["aim.btn_throw_knife"]="Ném dao",["aim.dynamic_fov"]="Tự Động Thu Phóng FOV",["aim.enable_fov"]="Bật vòng tròn FOV",["aim.fast_throw"]="Ném dao nhanh",["aim.fov_center_dot"]="Hiện Điểm Tâm FOV",["aim.fov_color"]="Màu vòng tròn FOV",["aim.fov_filled"]="Lấp đầy vòng tròn FOV",["aim.fov_radius"]="Bán kính FOV",["aim.fov_rainbow"]="Vòng FOV Cầu Vồng",["aim.fov_transparency"]="Độ trong suốt FOV",["aim.gun_aim_lock"]="Khóa mục tiêu súng",["aim.gun_auto_equip"]="Tự trang bị súng",["aim.gun_method"]="Phương thức bắn",["aim.gun_silent_aim"]="Silent Aim súng",["aim.highlight_target"]="Làm Nổi Bật Mục Tiêu",["aim.hit_chance"]="Tỉ Lệ Trúng (%)",["aim.kill_aura"]="Kill Aura",["aim.kill_aura_delay"]="Khoảng Cách Chém Dao (giây)",["aim.kill_aura_range"]="Phạm vi Kill Aura",["aim.kill_aura_target_mode"]="Chế Độ Mục Tiêu Aura",["aim.knife_aim_lock"]="Khóa mục tiêu dao",["aim.knife_auto_equip"]="Tự trang bị dao",["aim.knife_method"]="Phương thức dao",["aim.knife_silent_aim"]="Silent Aim dao",["aim.knife_speed"]="Tốc độ ném dao",["aim.manual_ping"]="Ping thủ công (ms)",["aim.ping_multiplier"]="Hệ số Ping",["aim.prediction_dot_color"]="Màu Điểm Dự Đoán",["aim.show_prediction_dot"]="Hiện Điểm Dự Đoán Bắn",["aim.show_target_tracer"]="Dây Dẫn Tới Mục Tiêu",["aim.smoothness"]="Độ mượt ngắm",["aim.target_highlight_color"]="Màu Nổi Bật Mục Tiêu",["aim.target_part"]="Bộ phận mục tiêu",["aim.target_priority"]="Ưu Tiên Mục Tiêu",["aim.target_tracer_color"]="Màu Dây Dẫn Mục Tiêu",["aim.triggerbot"]="Tự động bắn",["aim.triggerbot_delay"]="Độ Trễ Tự Bắn (giây)",["aim.triggerbot_visible_only"]="Chỉ Tự Bắn Khi Nhìn Thấy",["aim.wall_check"]="Kiểm tra tường",["group.configuration"]="Cấu hình",["group.flingactions"]="Hành động Fling",["group.fovcircle"]="Vòng tròn FOV",["group.generalaim"]="Cài đặt ngắm chung",["group.gunesp"]="ESP Súng rơi",["group.heroesp"]="ESP Anh hùng",["group.innocentesp"]="ESP Dân thường",["group.innocentutil"]="Tiện ích Dân thường",["group.layoutcustom"]="Tùy chỉnh bố cục",["group.localization"]="Ngôn ngữ & Bản địa hóa",["group.menu"]="Menu",["group.movement"]="Di chuyển",["group.murderer"]="Sát thủ",["group.murdereresp"]="ESP Sát thủ",["group.playerteleport"]="Dịch chuyển người chơi",["group.prediction"]="Dự đoán Ping",["group.protection"]="Bảo vệ",["group.rolefling"]="Fling theo vai trò",["group.roleteleports"]="Dịch chuyển vai trò",["group.sheriffesp"]="ESP Cảnh sát",["group.sheriffhero"]="Cảnh sát & Anh hùng",["group.themes"]="Giao diện màu",["group.trolling"]="Trêu đùa",["group.uielements"]="Phần tử giao diện",["group.visualindicators"]="Chỉ Báo Hình Ảnh",["group.world"]="Thế giới",["group.worldteleports"]="Dịch chuyển thế giới",["interface.category_combat"]="Chiến đấu & Ngắm",["interface.category_misc"]="Khác",["interface.category_player"]="Điều khiển người chơi",["interface.category_teleports"]="Dịch chuyển",["interface.category_visuals"]="Hình ảnh & ESP",["interface.edit_mode"]="Bật chế độ chỉnh sửa",["interface.floating_elements"]="Phím nổi",["interface.reset_layout"]="Khôi phục bố cục mặc định",["interface.save_layout"]="Lưu bố cục",["misc.auto_fling"]="Tự động Fling",["misc.btn_fling_all"]="Fling tất cả người chơi",["misc.btn_fling_hero"]="Fling anh hùng",["misc.btn_fling_innocents"]="Fling tất cả dân thường",["misc.btn_fling_murderer"]="Fling sát thủ",["misc.btn_fling_player"]="Fling người chơi đã chọn",["misc.btn_fling_sheriff"]="Fling cảnh sát",["misc.fling_duration"]="Thời gian Fling (s)",["misc.invisible"]="Tàng hình",["misc.select_fling_player"]="Chọn người chơi để Fling",["misc.target_role"]="Vai trò mục tiêu",["misc.touch_fling"]="Fling khi chạm",["player.antiafk"]="Chống AFK",["player.antifling"]="Chống Fling",["player.antivoid"]="Chống rơi hư vô",["player.fov"]="Góc nhìn",["player.fov_val"]="Giá trị FOV",["player.gravity"]="Trọng lực",["player.gravity_val"]="Giá trị trọng lực",["player.hipheight"]="Độ cao thân",["player.hipheight_val"]="Giá trị độ cao",["player.infinitejump"]="Nhảy vô hạn",["player.invisible"]="Vô hình",["player.jumppower"]="Lực nhảy",["player.jumppower_val"]="Giá trị nhảy",["player.noclip"]="Đi xuyên tường",["player.walkspeed"]="Tốc độ chạy",["player.walkspeed_val"]="Giá trị tốc độ",["settings.auto_detect"]="Tự động nhận diện ngôn ngữ",["settings.custom_cursor"]="Con trỏ chuột tùy chỉnh",["settings.language"]="Chọn ngôn ngữ",["settings.menu_keybind"]="Phím mở Menu",["settings.unload_script"]="Tắt Script",["tab.aimassist"]="Hỗ trợ ngắm",["tab.error"]="Lỗi",["tab.home"]="Trang Chủ",["tab.info"]="Thông Tin",["tab.interface"]="Giao diện",["tab.misc"]="Khác",["tab.player"]="Người chơi",["tab.settings"]="Cài đặt",["tab.teleports"]="Dịch chuyển",["tab.visuals"]="Hình ảnh",["tp.auto_map_vote"]="Bật tự động chọn map",["tp.btn_gun"]="Dịch chuyển tới súng rơi",["tp.btn_hero"]="Dịch chuyển tới anh hùng",["tp.btn_innocent"]="Dịch chuyển tới dân thường",["tp.btn_lobby"]="Dịch chuyển tới sảnh",["tp.btn_map"]="Dịch chuyển tới bản đồ",["tp.btn_murderer"]="Dịch chuyển tới sát thủ",["tp.btn_player"]="Dịch chuyển tới người chơi",["tp.btn_sheriff"]="Dịch chuyển tới cảnh sát",["tp.preferred_map"]="Bản đồ ưa thích",["tp.select_player"]="Chọn người chơi",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Độ trong suốt màu nền",["visuals.chams_outline"]="Độ trong suốt viền",["visuals.color"]="Màu %s",["visuals.show_distance"]="Hiện khoảng cách",["visuals.show_name"]="Hiện tên",["visuals.show_role"]="Hiện vai trò",["visuals.skeleton"]="Khung xương ESP",["visuals.tracers"]="Đường chỉ dẫn ESP",["visuals.tracers_pos"]="Vị trí đường chỉ dẫn",["coolwip.0"]="Chiến đấu",["coolwip.1"]="Tự động bắn kẻ sát nhân",["coolwip.2"]="Giới hạn ngắm trong vòng tròn",["coolwip.3"]="Độ đục của vòng tròn",["coolwip.4"]="Dự đoán chuyển động",["coolwip.5"]="Hiện tầm ném dao",["coolwip.6"]="Hệ số tốc độ dao",["coolwip.7"]="Công bố vai trò trong chat",["coolwip.8"]="Phím công bố vai trò",["coolwip.9"]="Đặt lại vị trí nút nổi",["coolwip.10"]="Tên và thông tin",["coolwip.11"]="Khung ESP",["coolwip.12"]="Ngắm súng",["coolwip.13"]="Ngắm dao",["coolwip.label.Murderer Visuals"]="Sát thủ — Hình ảnh",["coolwip.label.Murderer Chams"]="Sát thủ — Chams ESP",["coolwip.label.Murderer ESP Color"]="Màu Sát thủ",["coolwip.label.Murderer Color"]="Màu Sát thủ",["coolwip.label.Murderer Name & Info"]="Sát thủ — Tên và thông tin",["coolwip.label.Murderer Box ESP"]="Sát thủ — Khung ESP",["coolwip.label.Murderer Tracers"]="Sát thủ — Đường chỉ dẫn ESP",["coolwip.label.Murderer Skeleton ESP"]="Sát thủ — Khung xương ESP",["coolwip.label.Murderer Name"]="Sát thủ — Hiện tên",["coolwip.label.Murderer Distance"]="Sát thủ — Hiện khoảng cách",["coolwip.label.Sheriff & Hero Visuals"]="Cảnh sát & Anh hùng — Hình ảnh",["coolwip.label.Sheriff & Hero Chams"]="Cảnh sát & Anh hùng — Chams ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Màu Cảnh sát & Anh hùng",["coolwip.label.Sheriff & Hero Color"]="Màu Cảnh sát & Anh hùng",["coolwip.label.Sheriff & Hero Name & Info"]="Cảnh sát & Anh hùng — Tên và thông tin",["coolwip.label.Sheriff & Hero Box ESP"]="Cảnh sát & Anh hùng — Khung ESP",["coolwip.label.Sheriff & Hero Tracers"]="Cảnh sát & Anh hùng — Đường chỉ dẫn ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Cảnh sát & Anh hùng — Khung xương ESP",["coolwip.label.Sheriff & Hero Name"]="Cảnh sát & Anh hùng — Hiện tên",["coolwip.label.Sheriff & Hero Distance"]="Cảnh sát & Anh hùng — Hiện khoảng cách",["coolwip.label.Innocent Visuals"]="Dân thường — Hình ảnh",["coolwip.label.Innocent Chams"]="Dân thường — Chams ESP",["coolwip.label.Innocent ESP Color"]="Màu Dân thường",["coolwip.label.Innocent Color"]="Màu Dân thường",["coolwip.label.Innocent Name & Info"]="Dân thường — Tên và thông tin",["coolwip.label.Innocent Box ESP"]="Dân thường — Khung ESP",["coolwip.label.Innocent Tracers"]="Dân thường — Đường chỉ dẫn ESP",["coolwip.label.Innocent Skeleton ESP"]="Dân thường — Khung xương ESP",["coolwip.label.Innocent Name"]="Dân thường — Hiện tên",["coolwip.label.Innocent Distance"]="Dân thường — Hiện khoảng cách",["coolwip.label.Gun Drop Visuals"]="Súng Rơi — Hình ảnh",["coolwip.label.Gun Drop Chams"]="Súng Rơi — Chams ESP",["coolwip.label.Gun Drop ESP Color"]="Màu Súng Rơi",["coolwip.label.Gun Drop Color"]="Màu Súng Rơi",["coolwip.label.Gun Drop Name & Info"]="Súng Rơi — Tên và thông tin",["coolwip.label.Gun Drop Box ESP"]="Súng Rơi — Khung ESP",["coolwip.label.Gun Drop Tracers"]="Súng Rơi — Đường chỉ dẫn ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Súng Rơi — Khung xương ESP",["coolwip.label.Gun Drop Name"]="Súng Rơi — Hiện tên",["coolwip.label.Gun Drop Distance"]="Súng Rơi — Hiện khoảng cách"},["tr"]={["aim.auto_grab_gun"]="Düşen Silahı Otomatik Al",["aim.auto_kill_all"]="Otomatik Herkesi Öldür",["aim.auto_ping"]="Otomatik Ping",["aim.auto_revenge"]="Otomatik İntikam (Kahraman Modu)",["aim.auto_throw"]="Otomatik Bıçak Fırlat",["aim.auto_throw_delay"]="Otomatik Bıçak Atma Bekleme Süresi (s)",["aim.auto_throw_dist"]="Otomatik Atış Mesafesi",["aim.btn_kill_all"]="Tüm Oyuncuları Öldür",["aim.btn_pickup_gun"]="Silahı Al",["aim.btn_shoot_murderer"]="Katili Vur",["aim.btn_throw_knife"]="Bıçak Fırlat",["aim.dynamic_fov"]="Dinamik FOV Ölçekleme",["aim.enable_fov"]="FOV Çemberini Aç",["aim.fast_throw"]="Hızlı Bıçak Fırlatma",["aim.fov_center_dot"]="FOV Merkez Noktasını Göster",["aim.fov_color"]="FOV Çemberi Rengi",["aim.fov_filled"]="FOV Çemberini Doldur",["aim.fov_radius"]="FOV Yarıçapı",["aim.fov_rainbow"]="Gökkuşağı FOV Çemberi",["aim.fov_transparency"]="FOV Saydamlığı",["aim.gun_aim_lock"]="Silah Nişan Kilidi",["aim.gun_auto_equip"]="Silahı Otomatik Kuşan",["aim.gun_method"]="Atış Yöntemi",["aim.gun_silent_aim"]="Silah Silent Aim",["aim.highlight_target"]="Aktif Hedefi Vurgula",["aim.hit_chance"]="İsabet Oranı (%)",["aim.kill_aura"]="Kill Aura",["aim.kill_aura_delay"]="Öldürme Aurası Aralığı (s)",["aim.kill_aura_range"]="Kill Aura Menzili",["aim.kill_aura_target_mode"]="Öldürme Aurası Hedef Modu",["aim.knife_aim_lock"]="Bıçak Nişan Kilidi",["aim.knife_auto_equip"]="Bıçağı Otomatik Kuşan",["aim.knife_method"]="Bıçak Yöntemi",["aim.knife_silent_aim"]="Bıçak Silent Aim",["aim.knife_speed"]="Fırlatma Hızı",["aim.manual_ping"]="Manuel Ping (ms)",["aim.ping_multiplier"]="Ping Çarpanı",["aim.prediction_dot_color"]="Tahmin Noktası Rengi",["aim.show_prediction_dot"]="Tahmini Vuruş Noktasını Göster",["aim.show_target_tracer"]="Hedef İz Çizgisi",["aim.smoothness"]="Nişan Yumuşaklığı",["aim.target_highlight_color"]="Hedef Vurgu Rengi",["aim.target_part"]="Hedef Vücut Bölgesi",["aim.target_priority"]="Hedef Önceliği",["aim.target_tracer_color"]="Hedef İz Çizgisi Rengi",["aim.triggerbot"]="Otomatik Ateş",["aim.triggerbot_delay"]="Otomatik Atış Gecikmesi (s)",["aim.triggerbot_visible_only"]="Sadece Görünürken Otomatik Ateş",["aim.wall_check"]="Duvar Kontrolü",["group.configuration"]="Yapılandırma",["group.flingactions"]="Fling Eylemleri",["group.fovcircle"]="FOV Çemberi",["group.generalaim"]="Genel Ayarlar",["group.gunesp"]="Düşen Silah ESP",["group.heroesp"]="Kahraman ESP",["group.innocentesp"]="Masum ESP",["group.innocentutil"]="Masum Araçları",["group.layoutcustom"]="Düzen Özelleştirme",["group.localization"]="Dil & Yerelleştirme",["group.menu"]="Menü",["group.movement"]="Hareket",["group.murderer"]="Katil",["group.murdereresp"]="Katil ESP",["group.playerteleport"]="Oyuncuya Işınlanma",["group.prediction"]="Ping Tahmini",["group.protection"]="Koruma",["group.rolefling"]="Role Göre Fling",["group.roleteleports"]="Role Göre Işınlanma",["group.sheriffesp"]="Şerif ESP",["group.sheriffhero"]="Şerif & Kahraman",["group.themes"]="Temalar",["group.trolling"]="Trolling",["group.uielements"]="Arayüz Öğeleri",["group.visualindicators"]="Görsel Göstergeler",["group.world"]="Dünya",["group.worldteleports"]="Dünya Işınlanmaları",["interface.category_combat"]="Savaş & Nişan",["interface.category_misc"]="Çeşitli",["interface.category_player"]="Oyuncu Kontrolleri",["interface.category_teleports"]="Işınlanma",["interface.category_visuals"]="Görseller & ESP",["interface.edit_mode"]="Düzenleme Modunu Aç",["interface.floating_elements"]="Yüzen Butonlar",["interface.reset_layout"]="Varsayılan Düzene Sıfırla",["interface.save_layout"]="Düzeni Kaydet",["misc.auto_fling"]="Otomatik Fling",["misc.btn_fling_all"]="Tüm Oyuncuları Flingle",["misc.btn_fling_hero"]="Kahramanı Flingle",["misc.btn_fling_innocents"]="Tüm Masumları Flingle",["misc.btn_fling_murderer"]="Katili Flingle",["misc.btn_fling_player"]="Seçili Oyuncuyu Flingle",["misc.btn_fling_sheriff"]="Şerifi Flingle",["misc.fling_duration"]="Fling Süresi (s)",["misc.invisible"]="Görünmezlik",["misc.select_fling_player"]="Fling için Oyuncu Seç",["misc.target_role"]="Hedef Rol",["misc.touch_fling"]="Dokununca Fling",["player.antiafk"]="Anti-AFK",["player.antifling"]="Anti-Fling",["player.antivoid"]="Anti-Void",["player.fov"]="Görüş Alanı",["player.fov_val"]="FOV Değeri",["player.gravity"]="Yerçekimi",["player.gravity_val"]="Yerçekimi Değeri",["player.hipheight"]="Gövde Yüksekliği",["player.hipheight_val"]="Yükseklik Değeri",["player.infinitejump"]="Sonsuz Zıplama",["player.invisible"]="Görünmezlik",["player.jumppower"]="Zıplama Gücü",["player.jumppower_val"]="Zıplama Değeri",["player.noclip"]="Duvarlardan Geçme",["player.walkspeed"]="Yürüme Hızı",["player.walkspeed_val"]="Hız Değeri",["settings.auto_detect"]="Dili Otomatik Algıla",["settings.custom_cursor"]="Özel İmleç",["settings.language"]="Dil Seçimi",["settings.menu_keybind"]="Menü Tuşu",["settings.unload_script"]="Scripti Kapat",["tab.aimassist"]="Nişan Yardımı",["tab.error"]="Hata",["tab.home"]="Ana Sayfa",["tab.info"]="Bilgi",["tab.interface"]="Arayüz",["tab.misc"]="Çeşitli",["tab.player"]="Oyuncu",["tab.settings"]="Ayarlar",["tab.teleports"]="Işınlanmalar",["tab.visuals"]="Görseller",["tp.auto_map_vote"]="Oto Harita Oylama",["tp.btn_gun"]="Düşen Silaha Işınlan",["tp.btn_hero"]="Kahramana Işınlan",["tp.btn_innocent"]="Masuma Işınlan",["tp.btn_lobby"]="Lobiye Işınlan",["tp.btn_map"]="Haritaya Işınlan",["tp.btn_murderer"]="Katile Işınlan",["tp.btn_player"]="Seçili Oyuncuya Işınlan",["tp.btn_sheriff"]="Şerife Işınlan",["tp.preferred_map"]="Tercih Edilen Harita",["tp.select_player"]="Oyuncu Seç",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Dolgu Saydamlığı",["visuals.chams_outline"]="Çerçeve Saydamlığı",["visuals.color"]="%s Rengi",["visuals.show_distance"]="Mesafe Göster",["visuals.show_name"]="İsim Göster",["visuals.show_role"]="Rol Göster",["visuals.skeleton"]="İskelet ESP",["visuals.tracers"]="Tracers ESP",["visuals.tracers_pos"]="Çizgi Konumu",["coolwip.0"]="Savaş",["coolwip.1"]="Katili otomatik vur",["coolwip.2"]="Nişanı daireyle sınırla",["coolwip.3"]="Daire opaklığı",["coolwip.4"]="Hareket tahmini",["coolwip.5"]="Bıçak menzilini göster",["coolwip.6"]="Bıçak hızı çarpanı",["coolwip.7"]="Rolleri sohbette açıkla",["coolwip.8"]="Rolleri açıklama tuşu",["coolwip.9"]="Yüzen konumları sıfırla",["coolwip.10"]="Ad ve bilgi",["coolwip.11"]="Kutu ESP",["coolwip.12"]="Silahla nişan",["coolwip.13"]="Bıçakla nişan",["coolwip.label.Murderer Visuals"]="Katil — Görseller",["coolwip.label.Murderer Chams"]="Katil — Chams ESP",["coolwip.label.Murderer ESP Color"]="Katil Rengi",["coolwip.label.Murderer Color"]="Katil Rengi",["coolwip.label.Murderer Name & Info"]="Katil — Ad ve bilgi",["coolwip.label.Murderer Box ESP"]="Katil — Kutu ESP",["coolwip.label.Murderer Tracers"]="Katil — Tracers ESP",["coolwip.label.Murderer Skeleton ESP"]="Katil — İskelet ESP",["coolwip.label.Murderer Name"]="Katil — İsim Göster",["coolwip.label.Murderer Distance"]="Katil — Mesafe Göster",["coolwip.label.Sheriff & Hero Visuals"]="Şerif & Kahraman — Görseller",["coolwip.label.Sheriff & Hero Chams"]="Şerif & Kahraman — Chams ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Şerif & Kahraman Rengi",["coolwip.label.Sheriff & Hero Color"]="Şerif & Kahraman Rengi",["coolwip.label.Sheriff & Hero Name & Info"]="Şerif & Kahraman — Ad ve bilgi",["coolwip.label.Sheriff & Hero Box ESP"]="Şerif & Kahraman — Kutu ESP",["coolwip.label.Sheriff & Hero Tracers"]="Şerif & Kahraman — Tracers ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Şerif & Kahraman — İskelet ESP",["coolwip.label.Sheriff & Hero Name"]="Şerif & Kahraman — İsim Göster",["coolwip.label.Sheriff & Hero Distance"]="Şerif & Kahraman — Mesafe Göster",["coolwip.label.Innocent Visuals"]="Masum — Görseller",["coolwip.label.Innocent Chams"]="Masum — Chams ESP",["coolwip.label.Innocent ESP Color"]="Masum Rengi",["coolwip.label.Innocent Color"]="Masum Rengi",["coolwip.label.Innocent Name & Info"]="Masum — Ad ve bilgi",["coolwip.label.Innocent Box ESP"]="Masum — Kutu ESP",["coolwip.label.Innocent Tracers"]="Masum — Tracers ESP",["coolwip.label.Innocent Skeleton ESP"]="Masum — İskelet ESP",["coolwip.label.Innocent Name"]="Masum — İsim Göster",["coolwip.label.Innocent Distance"]="Masum — Mesafe Göster",["coolwip.label.Gun Drop Visuals"]="Düşen Silah — Görseller",["coolwip.label.Gun Drop Chams"]="Düşen Silah — Chams ESP",["coolwip.label.Gun Drop ESP Color"]="Düşen Silah Rengi",["coolwip.label.Gun Drop Color"]="Düşen Silah Rengi",["coolwip.label.Gun Drop Name & Info"]="Düşen Silah — Ad ve bilgi",["coolwip.label.Gun Drop Box ESP"]="Düşen Silah — Kutu ESP",["coolwip.label.Gun Drop Tracers"]="Düşen Silah — Tracers ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Düşen Silah — İskelet ESP",["coolwip.label.Gun Drop Name"]="Düşen Silah — İsim Göster",["coolwip.label.Gun Drop Distance"]="Düşen Silah — Mesafe Göster"},["de"]={["aim.auto_grab_gun"]="Waffe automatisch aufheben",["aim.auto_kill_all"]="Alle automatisch eliminieren",["aim.auto_ping"]="Automatischer Ping",["aim.auto_revenge"]="Automatische Rache (Helden-Modus)",["aim.auto_throw"]="Automatischer Messerwurf",["aim.auto_throw_delay"]="Auto-Wurf Abklingzeit (s)",["aim.auto_throw_dist"]="Auto-Wurf-Distanz",["aim.btn_kill_all"]="Alle Spieler eliminieren",["aim.btn_pickup_gun"]="Waffe aufheben",["aim.btn_shoot_murderer"]="Mörder erschießen",["aim.btn_throw_knife"]="Messer werfen",["aim.dynamic_fov"]="Dynamische FOV-Skalierung",["aim.enable_fov"]="FOV-Kreis aktivieren",["aim.fast_throw"]="Schneller Messerwurf",["aim.fov_center_dot"]="FOV-Mittelpunkt anzeigen",["aim.fov_color"]="FOV-Kreisfarbe",["aim.fov_filled"]="FOV-Kreis füllen",["aim.fov_radius"]="FOV-Radius",["aim.fov_rainbow"]="Regenbogen-FOV-Kreis",["aim.fov_transparency"]="FOV-Transparenz",["aim.gun_aim_lock"]="Waffen Ziel-Lock",["aim.gun_auto_equip"]="Waffe automatisch ausrüsten",["aim.gun_method"]="Schussmethode",["aim.gun_silent_aim"]="Waffen Silent Aim",["aim.highlight_target"]="Aktives Ziel hervorheben",["aim.hit_chance"]="Trefferchance (%)",["aim.kill_aura"]="Kill-Aura",["aim.kill_aura_delay"]="Kill-Aura-Intervall (s)",["aim.kill_aura_range"]="Kill-Aura-Reichweite",["aim.kill_aura_target_mode"]="Kill-Aura-Zielmodus",["aim.knife_aim_lock"]="Messer Ziel-Lock",["aim.knife_auto_equip"]="Messer automatisch ausrüsten",["aim.knife_method"]="Messermethode",["aim.knife_silent_aim"]="Messer Silent Aim",["aim.knife_speed"]="Wurfgeschwindigkeit",["aim.manual_ping"]="Manueller Ping (ms)",["aim.ping_multiplier"]="Ping-Multiplikator",["aim.prediction_dot_color"]="Vorhersagepunkt-Farbe",["aim.show_prediction_dot"]="Vorhersagepunkt anzeigen",["aim.show_target_tracer"]="Ziel-Tracer-Linie",["aim.smoothness"]="Ziel-Glättung",["aim.target_highlight_color"]="Ziel-Hervorhebungsfarbe",["aim.target_part"]="Ziel-Körperteil",["aim.target_priority"]="Zielpriorität",["aim.target_tracer_color"]="Ziel-Tracer-Farbe",["aim.triggerbot"]="Automatisches Schießen",["aim.triggerbot_delay"]="Triggerbot-Verzögerung (s)",["aim.triggerbot_visible_only"]="Triggerbot nur bei Sichtbarkeit",["aim.wall_check"]="Wand-Überprüfung",["group.configuration"]="Konfiguration",["group.flingactions"]="Fling-Aktionen",["group.fovcircle"]="FOV-Kreis",["group.generalaim"]="Allgemeine Zielhilfe",["group.gunesp"]="Waffen-Drop ESP",["group.heroesp"]="Held ESP",["group.innocentesp"]="Unschuldige ESP",["group.innocentutil"]="Unschuldigen-Tools",["group.layoutcustom"]="Layout-Anpassung",["group.localization"]="Sprache & Lokalisierung",["group.menu"]="Menü",["group.movement"]="Bewegung",["group.murderer"]="Mörder",["group.murdereresp"]="Mörder ESP",["group.playerteleport"]="Spieler-Teleport",["group.prediction"]="Ping-Vorhersage",["group.protection"]="Schutz",["group.rolefling"]="Rollen-Fling",["group.roleteleports"]="Rollen-Teleporte",["group.sheriffesp"]="Sheriff ESP",["group.sheriffhero"]="Sheriff & Held",["group.themes"]="Themes",["group.trolling"]="Trolling",["group.uielements"]="UI-Elemente",["group.visualindicators"]="Visuelle Indikatoren",["group.world"]="Welt",["group.worldteleports"]="Welt-Teleporte",["interface.category_combat"]="Kampf & Zielhilfe",["interface.category_misc"]="Sonstiges",["interface.category_player"]="Spielersteuerung",["interface.category_teleports"]="Teleportation",["interface.category_visuals"]="Visuals & ESP",["interface.edit_mode"]="Bearbeitungsmodus aktivieren",["interface.floating_elements"]="Schwebende Buttons",["interface.reset_layout"]="Standard-Layout wiederherstellen",["interface.save_layout"]="Layout speichern",["misc.auto_fling"]="Automatischer Fling",["misc.btn_fling_all"]="Alle Spieler flingen",["misc.btn_fling_hero"]="Helden flingen",["misc.btn_fling_innocents"]="Alle Unschuldigen flingen",["misc.btn_fling_murderer"]="Mörder flingen",["misc.btn_fling_player"]="Ausgewählten Spieler flingen",["misc.btn_fling_sheriff"]="Sheriff flingen",["misc.fling_duration"]="Fling-Dauer (s)",["misc.invisible"]="Unsichtbarkeit",["misc.select_fling_player"]="Spieler zum Flingen wählen",["misc.target_role"]="Ziel-Rolle",["misc.touch_fling"]="Fling bei Berührung",["player.antiafk"]="Anti-AFK",["player.antifling"]="Anti-Fling",["player.antivoid"]="Anti-Void",["player.fov"]="Sichtfeld",["player.fov_val"]="FOV-Wert",["player.gravity"]="Schwerkraft",["player.gravity_val"]="Schwerkraftwert",["player.hipheight"]="Hüfthöhe",["player.hipheight_val"]="Höhenwert",["player.infinitejump"]="Unendlicher Sprung",["player.invisible"]="Unsichtbarkeit",["player.jumppower"]="Sprungkraft",["player.jumppower_val"]="Sprungwert",["player.noclip"]="Durch Wände gehen",["player.walkspeed"]="Laufgeschwindigkeit",["player.walkspeed_val"]="Geschwindigkeitswert",["settings.auto_detect"]="Sprache automatisch erkennen",["settings.custom_cursor"]="Benutzerdefinierter Mauszeiger",["settings.language"]="Sprache auswählen",["settings.menu_keybind"]="Menü-Taste",["settings.unload_script"]="Skript entladen",["tab.aimassist"]="Zielhilfe",["tab.error"]="Fehler",["tab.home"]="Startseite",["tab.info"]="Info",["tab.interface"]="Interface",["tab.misc"]="Sonstiges",["tab.player"]="Spieler",["tab.settings"]="Einstellungen",["tab.teleports"]="Teleports",["tab.visuals"]="Visuals",["tp.auto_map_vote"]="Auto-Kartenwahl aktivieren",["tp.btn_gun"]="Zur Waffe teleportieren",["tp.btn_hero"]="Zum Helden teleportieren",["tp.btn_innocent"]="Zu Unschuldigem teleportieren",["tp.btn_lobby"]="Zur Lobby teleportieren",["tp.btn_map"]="Zur Karte teleportieren",["tp.btn_murderer"]="Zum Mörder teleportieren",["tp.btn_player"]="Zum ausgewählten Spieler teleportieren",["tp.btn_sheriff"]="Zum Sheriff teleportieren",["tp.preferred_map"]="Bevorzugte Karte",["tp.select_player"]="Spieler auswählen",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Füll-Transparenz",["visuals.chams_outline"]="Umriss-Transparenz",["visuals.color"]="Farbe von %s",["visuals.show_distance"]="Distanz anzeigen",["visuals.show_name"]="Name anzeigen",["visuals.show_role"]="Rolle anzeigen",["visuals.skeleton"]="Skelett ESP",["visuals.tracers"]="Tracers ESP",["visuals.tracers_pos"]="Linien-Position",["coolwip.0"]="Kampf",["coolwip.1"]="Automatisch auf Mörder schießen",["coolwip.2"]="Zielen auf Kreis begrenzen",["coolwip.3"]="Deckkraft des Kreises",["coolwip.4"]="Bewegungsvorhersage",["coolwip.5"]="Messerreichweite anzeigen",["coolwip.6"]="Multiplikator der Messergeschwindigkeit",["coolwip.7"]="Rollen im Chat aufdecken",["coolwip.8"]="Taste zum Aufdecken der Rollen",["coolwip.9"]="Schwebende Positionen zurücksetzen",["coolwip.10"]="Name und Info",["coolwip.11"]="ESP-Rahmen",["coolwip.12"]="Pistolenzielen",["coolwip.13"]="Messerzielen",["coolwip.label.Murderer Visuals"]="Mörder — Visuals",["coolwip.label.Murderer Chams"]="Mörder — Chams ESP",["coolwip.label.Murderer ESP Color"]="Farbe von Mörder",["coolwip.label.Murderer Color"]="Farbe von Mörder",["coolwip.label.Murderer Name & Info"]="Mörder — Name und Info",["coolwip.label.Murderer Box ESP"]="Mörder — ESP-Rahmen",["coolwip.label.Murderer Tracers"]="Mörder — Tracers ESP",["coolwip.label.Murderer Skeleton ESP"]="Mörder — Skelett ESP",["coolwip.label.Murderer Name"]="Mörder — Name anzeigen",["coolwip.label.Murderer Distance"]="Mörder — Distanz anzeigen",["coolwip.label.Sheriff & Hero Visuals"]="Sheriff & Held — Visuals",["coolwip.label.Sheriff & Hero Chams"]="Sheriff & Held — Chams ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Farbe von Sheriff & Held",["coolwip.label.Sheriff & Hero Color"]="Farbe von Sheriff & Held",["coolwip.label.Sheriff & Hero Name & Info"]="Sheriff & Held — Name und Info",["coolwip.label.Sheriff & Hero Box ESP"]="Sheriff & Held — ESP-Rahmen",["coolwip.label.Sheriff & Hero Tracers"]="Sheriff & Held — Tracers ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Sheriff & Held — Skelett ESP",["coolwip.label.Sheriff & Hero Name"]="Sheriff & Held — Name anzeigen",["coolwip.label.Sheriff & Hero Distance"]="Sheriff & Held — Distanz anzeigen",["coolwip.label.Innocent Visuals"]="Unschuldiger — Visuals",["coolwip.label.Innocent Chams"]="Unschuldiger — Chams ESP",["coolwip.label.Innocent ESP Color"]="Farbe von Unschuldiger",["coolwip.label.Innocent Color"]="Farbe von Unschuldiger",["coolwip.label.Innocent Name & Info"]="Unschuldiger — Name und Info",["coolwip.label.Innocent Box ESP"]="Unschuldiger — ESP-Rahmen",["coolwip.label.Innocent Tracers"]="Unschuldiger — Tracers ESP",["coolwip.label.Innocent Skeleton ESP"]="Unschuldiger — Skelett ESP",["coolwip.label.Innocent Name"]="Unschuldiger — Name anzeigen",["coolwip.label.Innocent Distance"]="Unschuldiger — Distanz anzeigen",["coolwip.label.Gun Drop Visuals"]="Waffen-Drop — Visuals",["coolwip.label.Gun Drop Chams"]="Waffen-Drop — Chams ESP",["coolwip.label.Gun Drop ESP Color"]="Farbe von Waffen-Drop",["coolwip.label.Gun Drop Color"]="Farbe von Waffen-Drop",["coolwip.label.Gun Drop Name & Info"]="Waffen-Drop — Name und Info",["coolwip.label.Gun Drop Box ESP"]="Waffen-Drop — ESP-Rahmen",["coolwip.label.Gun Drop Tracers"]="Waffen-Drop — Tracers ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Waffen-Drop — Skelett ESP",["coolwip.label.Gun Drop Name"]="Waffen-Drop — Name anzeigen",["coolwip.label.Gun Drop Distance"]="Waffen-Drop — Distanz anzeigen"},["fr"]={["aim.auto_grab_gun"]="Ramasser l'Arme Automatiquement",["aim.auto_kill_all"]="Auto Éliminer Tout le Monde",["aim.auto_ping"]="Ping Automatique",["aim.auto_revenge"]="Vengeance Auto (Mode Héros)",["aim.auto_throw"]="Lancer de Couteau Automatique",["aim.auto_throw_delay"]="Recharge Lancer Auto (s)",["aim.auto_throw_dist"]="Distance de Lancer Auto",["aim.btn_kill_all"]="Éliminer Tous les Joueurs",["aim.btn_pickup_gun"]="Ramasser l'Arme",["aim.btn_shoot_murderer"]="Tirer sur le Meurtrier",["aim.btn_throw_knife"]="Lancer le Couteau",["aim.dynamic_fov"]="Échelle FOV Dynamique",["aim.enable_fov"]="Activer le Cercle FOV",["aim.fast_throw"]="Lancer de Couteau Rapide",["aim.fov_center_dot"]="Afficher Point Central FOV",["aim.fov_color"]="Couleur du Cercle FOV",["aim.fov_filled"]="Remplir le Cercle FOV",["aim.fov_radius"]="Rayon du FOV",["aim.fov_rainbow"]="Cercle FOV Arc-en-ciel",["aim.fov_transparency"]="Transparence du FOV",["aim.gun_aim_lock"]="Verrouillage de Visée Pistolet",["aim.gun_auto_equip"]="Équiper l'Arme Automatiquement",["aim.gun_method"]="Méthode de Tir",["aim.gun_silent_aim"]="Silent Aim Pistolet",["aim.highlight_target"]="Surligner la Cible Active",["aim.hit_chance"]="Chance de Toucher (%)",["aim.kill_aura"]="Kill Aura",["aim.kill_aura_delay"]="Intervalle de Kill Aura (s)",["aim.kill_aura_range"]="Portée de Kill Aura",["aim.kill_aura_target_mode"]="Mode de Cibles de Kill Aura",["aim.knife_aim_lock"]="Verrouillage de Visée Couteau",["aim.knife_auto_equip"]="Équiper le Couteau Automatiquement",["aim.knife_method"]="Méthode du Couteau",["aim.knife_silent_aim"]="Silent Aim Couteau",["aim.knife_speed"]="Vitesse de Lancer",["aim.manual_ping"]="Ping Manuel (ms)",["aim.ping_multiplier"]="Multiplicateur de Ping",["aim.prediction_dot_color"]="Couleur Point de Prédiction",["aim.show_prediction_dot"]="Afficher Point de Prédiction",["aim.show_target_tracer"]="Ligne de Visée Cible",["aim.smoothness"]="Fluidité de Visée",["aim.target_highlight_color"]="Couleur de Surlignage Cible",["aim.target_part"]="Partie du Corps Ciblée",["aim.target_priority"]="Priorité de la Cible",["aim.target_tracer_color"]="Couleur de Ligne Cible",["aim.triggerbot"]="Tir Automatique",["aim.triggerbot_delay"]="Délai Triggerbot (s)",["aim.triggerbot_visible_only"]="Triggerbot Visible Uniquement",["aim.wall_check"]="Vérification des Murs",["group.configuration"]="Configuration",["group.flingactions"]="Actions de Fling",["group.fovcircle"]="Cercle FOV",["group.generalaim"]="Paramètres Généraux",["group.gunesp"]="ESP Arme Tombée",["group.heroesp"]="ESP Héros",["group.innocentesp"]="ESP Innocent",["group.innocentutil"]="Utilitaires Innocent",["group.layoutcustom"]="Personnalisation du Layout",["group.localization"]="Langue & Traduction",["group.menu"]="Menu",["group.movement"]="Mouvement",["group.murderer"]="Meurtrier",["group.murdereresp"]="ESP Meurtrier",["group.playerteleport"]="Téléportation Joueur",["group.prediction"]="Prédiction du Ping",["group.protection"]="Protection",["group.rolefling"]="Fling par Rôle",["group.roleteleports"]="Téléportation par Rôle",["group.sheriffesp"]="ESP Shérif",["group.sheriffhero"]="Shérif & Héros",["group.themes"]="Thèmes",["group.trolling"]="Trolling",["group.uielements"]="Éléments d'Interface",["group.visualindicators"]="Indicateurs Visuels",["group.world"]="Monde",["group.worldteleports"]="Téléportations du Monde",["interface.category_combat"]="Combat & Visée",["interface.category_misc"]="Divers",["interface.category_player"]="Contrôles Joueur",["interface.category_teleports"]="Téléportation",["interface.category_visuals"]="Visuels & ESP",["interface.edit_mode"]="Activer le Mode Édition",["interface.floating_elements"]="Boutons Flottants",["interface.reset_layout"]="Rétablir le Layout par Défaut",["interface.save_layout"]="Sauvegarder le Layout",["misc.auto_fling"]="Auto Fling",["misc.btn_fling_all"]="Propulser Tous les Joueurs",["misc.btn_fling_hero"]="Propulser le Héros",["misc.btn_fling_innocents"]="Propulser Tous les Innocents",["misc.btn_fling_murderer"]="Propulser le Meurtrier",["misc.btn_fling_player"]="Propulser le Joueur Sélectionné",["misc.btn_fling_sheriff"]="Propulser le Shérif",["misc.fling_duration"]="Durée du Fling (s)",["misc.invisible"]="Invisibilité",["misc.select_fling_player"]="Sélectionner un Joueur à Propulser",["misc.target_role"]="Rôle Cible",["misc.touch_fling"]="Fling au Toucher",["player.antiafk"]="Anti-AFK",["player.antifling"]="Anti-Fling",["player.antivoid"]="Anti-Vide",["player.fov"]="Champ de Vision",["player.fov_val"]="Valeur FOV",["player.gravity"]="Gravité",["player.gravity_val"]="Valeur de Gravité",["player.hipheight"]="Hauteur de hanche",["player.hipheight_val"]="Valeur de Hauteur",["player.infinitejump"]="Saut Infini",["player.invisible"]="Invisible",["player.jumppower"]="Puissance de saut",["player.jumppower_val"]="Valeur de Saut",["player.noclip"]="Traverser les murs",["player.walkspeed"]="Vitesse de marche",["player.walkspeed_val"]="Valeur de Vitesse",["settings.auto_detect"]="Détecter la Langue Automatiquement",["settings.custom_cursor"]="Curseur Personnalisé",["settings.language"]="Sélectionner la Langue",["settings.menu_keybind"]="Touche du Menu",["settings.unload_script"]="Décharger le Script",["tab.aimassist"]="Aide à la Visée",["tab.error"]="Erreur",["tab.home"]="Accueil",["tab.info"]="Infos",["tab.interface"]="Interface",["tab.misc"]="Divers",["tab.player"]="Joueur",["tab.settings"]="Paramètres",["tab.teleports"]="Téléportations",["tab.visuals"]="Visuels",["tp.auto_map_vote"]="Activer le Vote Auto de Carte",["tp.btn_gun"]="Téléporter à l'Arme Tombée",["tp.btn_hero"]="Téléporter au Héros",["tp.btn_innocent"]="Téléporter à un Innocent",["tp.btn_lobby"]="Téléporter au Lobby",["tp.btn_map"]="Téléporter à la Carte",["tp.btn_murderer"]="Téléporter au Meurtrier",["tp.btn_player"]="Téléporter au Joueur Sélectionné",["tp.btn_sheriff"]="Téléporter au Shérif",["tp.preferred_map"]="Carte Préférée",["tp.select_player"]="Sélectionner un Joueur",["visuals.chams"]="Chams ESP",["visuals.chams_fill"]="Transparence de Remplissage",["visuals.chams_outline"]="Transparence du Contour",["visuals.color"]="Couleur de %s",["visuals.show_distance"]="Afficher la Distance",["visuals.show_name"]="Afficher le Nom",["visuals.show_role"]="Afficher le Rôle",["visuals.skeleton"]="Squelette ESP",["visuals.tracers"]="Tracers ESP",["visuals.tracers_pos"]="Origine des Tracers",["coolwip.0"]="Combat",["coolwip.1"]="Tirer automatiquement sur le meurtrier",["coolwip.2"]="Limiter la visée au cercle",["coolwip.3"]="Opacité du cercle",["coolwip.4"]="Prédiction des mouvements",["coolwip.5"]="Afficher la portée du couteau",["coolwip.6"]="Multiplicateur de vitesse du couteau",["coolwip.7"]="Révéler les rôles dans le chat",["coolwip.8"]="Touche pour révéler les rôles",["coolwip.9"]="Réinitialiser les positions flottantes",["coolwip.10"]="Nom et informations",["coolwip.11"]="Cadre ESP",["coolwip.12"]="Visée au pistolet",["coolwip.13"]="Visée au couteau",["coolwip.label.Murderer Visuals"]="Meurtrier — Visuels",["coolwip.label.Murderer Chams"]="Meurtrier — Chams ESP",["coolwip.label.Murderer ESP Color"]="Couleur de Meurtrier",["coolwip.label.Murderer Color"]="Couleur de Meurtrier",["coolwip.label.Murderer Name & Info"]="Meurtrier — Nom et informations",["coolwip.label.Murderer Box ESP"]="Meurtrier — Cadre ESP",["coolwip.label.Murderer Tracers"]="Meurtrier — Tracers ESP",["coolwip.label.Murderer Skeleton ESP"]="Meurtrier — Squelette ESP",["coolwip.label.Murderer Name"]="Meurtrier — Afficher le Nom",["coolwip.label.Murderer Distance"]="Meurtrier — Afficher la Distance",["coolwip.label.Sheriff & Hero Visuals"]="Shérif & Héros — Visuels",["coolwip.label.Sheriff & Hero Chams"]="Shérif & Héros — Chams ESP",["coolwip.label.Sheriff & Hero ESP Color"]="Couleur de Shérif & Héros",["coolwip.label.Sheriff & Hero Color"]="Couleur de Shérif & Héros",["coolwip.label.Sheriff & Hero Name & Info"]="Shérif & Héros — Nom et informations",["coolwip.label.Sheriff & Hero Box ESP"]="Shérif & Héros — Cadre ESP",["coolwip.label.Sheriff & Hero Tracers"]="Shérif & Héros — Tracers ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="Shérif & Héros — Squelette ESP",["coolwip.label.Sheriff & Hero Name"]="Shérif & Héros — Afficher le Nom",["coolwip.label.Sheriff & Hero Distance"]="Shérif & Héros — Afficher la Distance",["coolwip.label.Innocent Visuals"]="Innocent — Visuels",["coolwip.label.Innocent Chams"]="Innocent — Chams ESP",["coolwip.label.Innocent ESP Color"]="Couleur de Innocent",["coolwip.label.Innocent Color"]="Couleur de Innocent",["coolwip.label.Innocent Name & Info"]="Innocent — Nom et informations",["coolwip.label.Innocent Box ESP"]="Innocent — Cadre ESP",["coolwip.label.Innocent Tracers"]="Innocent — Tracers ESP",["coolwip.label.Innocent Skeleton ESP"]="Innocent — Squelette ESP",["coolwip.label.Innocent Name"]="Innocent — Afficher le Nom",["coolwip.label.Innocent Distance"]="Innocent — Afficher la Distance",["coolwip.label.Gun Drop Visuals"]="Arme Tombée — Visuels",["coolwip.label.Gun Drop Chams"]="Arme Tombée — Chams ESP",["coolwip.label.Gun Drop ESP Color"]="Couleur de Arme Tombée",["coolwip.label.Gun Drop Color"]="Couleur de Arme Tombée",["coolwip.label.Gun Drop Name & Info"]="Arme Tombée — Nom et informations",["coolwip.label.Gun Drop Box ESP"]="Arme Tombée — Cadre ESP",["coolwip.label.Gun Drop Tracers"]="Arme Tombée — Tracers ESP",["coolwip.label.Gun Drop Skeleton ESP"]="Arme Tombée — Squelette ESP",["coolwip.label.Gun Drop Name"]="Arme Tombée — Afficher le Nom",["coolwip.label.Gun Drop Distance"]="Arme Tombée — Afficher la Distance"},["ja"]={["aim.auto_grab_gun"]="落ちた銃を自動取得",["aim.auto_kill_all"]="全員を自動瞬殺",["aim.auto_ping"]="Ping 自動調整",["aim.auto_revenge"]="自動リベンジ (ヒーローモード)",["aim.auto_throw"]="自動ナイフ投げ",["aim.auto_throw_delay"]="自動ナイフ投げクールダウン (秒)",["aim.auto_throw_dist"]="自動投擲の距離",["aim.btn_kill_all"]="全員を瞬殺",["aim.btn_pickup_gun"]="落ちた銃を取得",["aim.btn_shoot_murderer"]="殺人鬼を射撃",["aim.btn_throw_knife"]="ナイフを投げる",["aim.dynamic_fov"]="ダイナミックFOVスケーリング",["aim.enable_fov"]="FOV円を表示",["aim.fast_throw"]="高速ナイフ投げ",["aim.fov_center_dot"]="FOV中心点を表示",["aim.fov_color"]="FOV円の色",["aim.fov_filled"]="FOV円を塗りつぶす",["aim.fov_radius"]="FOVの半径",["aim.fov_rainbow"]="レインボーFOVサークル",["aim.fov_transparency"]="FOVの透明度",["aim.gun_aim_lock"]="銃 エイムロック",["aim.gun_auto_equip"]="銃を自動装備",["aim.gun_method"]="射撃方式",["aim.gun_silent_aim"]="銃 サイレントエイム",["aim.highlight_target"]="ターゲットをハイライト",["aim.hit_chance"]="命中確率 (%)",["aim.kill_aura"]="キルオーラ",["aim.kill_aura_delay"]="キルオーラ間隔 (秒)",["aim.kill_aura_range"]="キルオーラの範囲",["aim.kill_aura_target_mode"]="キルオーラターゲットモード",["aim.knife_aim_lock"]="ナイフ エイムロック",["aim.knife_auto_equip"]="ナイフを自動装備",["aim.knife_method"]="ナイフ方式",["aim.knife_silent_aim"]="ナイフ サイレントエイム",["aim.knife_speed"]="投擲速度",["aim.manual_ping"]="手動 Ping (ms)",["aim.ping_multiplier"]="Ping 倍率",["aim.prediction_dot_color"]="着弾予測ポイントの色",["aim.show_prediction_dot"]="着弾予測ポイントを表示",["aim.show_target_tracer"]="ターゲットトレーサー線",["aim.smoothness"]="エイムの滑らかさ",["aim.target_highlight_color"]="ターゲットハイライト色",["aim.target_part"]="エイム対象部位",["aim.target_priority"]="ターゲット優先度",["aim.target_tracer_color"]="トレーサー線の色",["aim.triggerbot"]="自動射撃",["aim.triggerbot_delay"]="トリガーボット遅延 (秒)",["aim.triggerbot_visible_only"]="可視時のみトリガーボット",["aim.wall_check"]="遮蔽物判定",["group.configuration"]="設定保存",["group.flingactions"]="吹き飛ばし機能",["group.fovcircle"]="FOV サークル",["group.generalaim"]="一般エイム設定",["group.gunesp"]="ドロップ銃 ESP",["group.heroesp"]="ヒーロー ESP",["group.innocentesp"]="市民 ESP",["group.innocentutil"]="市民ユーティリティ",["group.layoutcustom"]="レイアウト編集",["group.localization"]="言語と地域設定",["group.menu"]="メニュー",["group.movement"]="移動設定",["group.murderer"]="殺人鬼機能",["group.murdereresp"]="殺人鬼 ESP",["group.playerteleport"]="プレイヤーテレポート",["group.prediction"]="Ping 予測",["group.protection"]="保護機能",["group.rolefling"]="役職別吹き飛ばし",["group.roleteleports"]="役職別テレポート",["group.sheriffesp"]="保安官 ESP",["group.sheriffhero"]="保安官 & ヒーロー",["group.themes"]="テーマ設定",["group.trolling"]="トロール機能",["group.uielements"]="UIエレメント",["group.visualindicators"]="ビジュアルインジケーター",["group.world"]="ワールド設定",["group.worldteleports"]="ワールドテレポート",["interface.category_combat"]="戦闘 & エイム",["interface.category_misc"]="その他",["interface.category_player"]="プレイヤー操作",["interface.category_teleports"]="テレポート",["interface.category_visuals"]="視覚 & ESP",["interface.edit_mode"]="編集モードを有効化",["interface.floating_elements"]="フローティングボタン",["interface.reset_layout"]="初期レイアウトに戻す",["interface.save_layout"]="レイアウトを保存",["misc.auto_fling"]="自動吹き飛ばし",["misc.btn_fling_all"]="全員を吹き飛ばす",["misc.btn_fling_hero"]="ヒーローを吹き飛ばす",["misc.btn_fling_innocents"]="全市民を吹き飛ばす",["misc.btn_fling_murderer"]="殺人鬼を吹き飛ばす",["misc.btn_fling_player"]="対象を吹き飛ばす",["misc.btn_fling_sheriff"]="保安官を吹き飛ばす",["misc.fling_duration"]="吹き飛ばし時間 (s)",["misc.invisible"]="完全透明化",["misc.select_fling_player"]="吹き飛ばす対象を選択",["misc.target_role"]="対象役職",["misc.touch_fling"]="接触時に吹き飛ばす",["player.antiafk"]="放置キック防止",["player.antifling"]="吹き飛ばし無効化",["player.antivoid"]="奈落落下防止",["player.fov"]="視野角",["player.fov_val"]="視野数値",["player.gravity"]="重力設定",["player.gravity_val"]="重力数値",["player.hipheight"]="浮遊高度",["player.hipheight_val"]="高度数値",["player.infinitejump"]="無限ジャンプ",["player.invisible"]="透明化",["player.jumppower"]="ジャンプ力",["player.jumppower_val"]="ジャンプ数値",["player.noclip"]="壁すり抜け",["player.walkspeed"]="移動速度",["player.walkspeed_val"]="速度数値",["settings.auto_detect"]="言語を自動検出",["settings.custom_cursor"]="カスタムカーソル",["settings.language"]="言語を選択",["settings.menu_keybind"]="メニュー開閉キー",["settings.unload_script"]="スクリプトを終了",["tab.aimassist"]="エイムアシスト",["tab.error"]="エラー",["tab.home"]="ホーム",["tab.info"]="情報",["tab.interface"]="UI配置設定",["tab.misc"]="その他",["tab.player"]="プレイヤー",["tab.settings"]="設定",["tab.teleports"]="テレポート",["tab.visuals"]="透視・視覚",["tp.auto_map_vote"]="自動マップ投票を有効化",["tp.btn_gun"]="落ちた銃へテレポート",["tp.btn_hero"]="ヒーローへテレポート",["tp.btn_innocent"]="市民へテレポート",["tp.btn_lobby"]="ロビーへテレポート",["tp.btn_map"]="マップへテレポート",["tp.btn_murderer"]="殺人鬼へテレポート",["tp.btn_player"]="選択したプレイヤーへテレポート",["tp.btn_sheriff"]="保安官へテレポート",["tp.preferred_map"]="優先マップ",["tp.select_player"]="プレイヤーを選択",["visuals.chams"]="Chams 発光",["visuals.chams_fill"]="発光の透明度",["visuals.chams_outline"]="枠線の透明度",["visuals.color"]="%s の色",["visuals.show_distance"]="距離を表示",["visuals.show_name"]="名前を表示",["visuals.show_role"]="役職を表示",["visuals.skeleton"]="骨格 ESP",["visuals.tracers"]="射線ライン ESP",["visuals.tracers_pos"]="射線の開始位置",["coolwip.0"]="戦闘",["coolwip.1"]="殺人者を自動射撃",["coolwip.2"]="照準を円内に制限",["coolwip.3"]="円の不透明度",["coolwip.4"]="移動予測",["coolwip.5"]="ナイフの射程を表示",["coolwip.6"]="ナイフ速度倍率",["coolwip.7"]="チャットで役割を公開",["coolwip.8"]="役割公開キー",["coolwip.9"]="フローティング位置をリセット",["coolwip.10"]="名前と情報",["coolwip.11"]="ESPボックス",["coolwip.12"]="銃の照準",["coolwip.13"]="ナイフの照準",["coolwip.label.Murderer Visuals"]="殺人鬼 — 透視・視覚",["coolwip.label.Murderer Chams"]="殺人鬼 — Chams 発光",["coolwip.label.Murderer ESP Color"]="殺人鬼 の色",["coolwip.label.Murderer Color"]="殺人鬼 の色",["coolwip.label.Murderer Name & Info"]="殺人鬼 — 名前と情報",["coolwip.label.Murderer Box ESP"]="殺人鬼 — ESPボックス",["coolwip.label.Murderer Tracers"]="殺人鬼 — 射線ライン ESP",["coolwip.label.Murderer Skeleton ESP"]="殺人鬼 — 骨格 ESP",["coolwip.label.Murderer Name"]="殺人鬼 — 名前を表示",["coolwip.label.Murderer Distance"]="殺人鬼 — 距離を表示",["coolwip.label.Sheriff & Hero Visuals"]="保安官 & ヒーロー — 透視・視覚",["coolwip.label.Sheriff & Hero Chams"]="保安官 & ヒーロー — Chams 発光",["coolwip.label.Sheriff & Hero ESP Color"]="保安官 & ヒーロー の色",["coolwip.label.Sheriff & Hero Color"]="保安官 & ヒーロー の色",["coolwip.label.Sheriff & Hero Name & Info"]="保安官 & ヒーロー — 名前と情報",["coolwip.label.Sheriff & Hero Box ESP"]="保安官 & ヒーロー — ESPボックス",["coolwip.label.Sheriff & Hero Tracers"]="保安官 & ヒーロー — 射線ライン ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="保安官 & ヒーロー — 骨格 ESP",["coolwip.label.Sheriff & Hero Name"]="保安官 & ヒーロー — 名前を表示",["coolwip.label.Sheriff & Hero Distance"]="保安官 & ヒーロー — 距離を表示",["coolwip.label.Innocent Visuals"]="市民 — 透視・視覚",["coolwip.label.Innocent Chams"]="市民 — Chams 発光",["coolwip.label.Innocent ESP Color"]="市民 の色",["coolwip.label.Innocent Color"]="市民 の色",["coolwip.label.Innocent Name & Info"]="市民 — 名前と情報",["coolwip.label.Innocent Box ESP"]="市民 — ESPボックス",["coolwip.label.Innocent Tracers"]="市民 — 射線ライン ESP",["coolwip.label.Innocent Skeleton ESP"]="市民 — 骨格 ESP",["coolwip.label.Innocent Name"]="市民 — 名前を表示",["coolwip.label.Innocent Distance"]="市民 — 距離を表示",["coolwip.label.Gun Drop Visuals"]="ドロップ銃 — 透視・視覚",["coolwip.label.Gun Drop Chams"]="ドロップ銃 — Chams 発光",["coolwip.label.Gun Drop ESP Color"]="ドロップ銃 の色",["coolwip.label.Gun Drop Color"]="ドロップ銃 の色",["coolwip.label.Gun Drop Name & Info"]="ドロップ銃 — 名前と情報",["coolwip.label.Gun Drop Box ESP"]="ドロップ銃 — ESPボックス",["coolwip.label.Gun Drop Tracers"]="ドロップ銃 — 射線ライン ESP",["coolwip.label.Gun Drop Skeleton ESP"]="ドロップ銃 — 骨格 ESP",["coolwip.label.Gun Drop Name"]="ドロップ銃 — 名前を表示",["coolwip.label.Gun Drop Distance"]="ドロップ銃 — 距離を表示"},["ko"]={["aim.auto_grab_gun"]="떨어진 총 자동 획득",["aim.auto_kill_all"]="자동 전체 처치",["aim.auto_ping"]="자동 핑 조절",["aim.auto_revenge"]="자동 복수 (영웅 모드)",["aim.auto_throw"]="칼 자동 투척",["aim.auto_throw_delay"]="자동 칼 던지기 대기시간 (초)",["aim.auto_throw_dist"]="자동 투척 거리",["aim.btn_kill_all"]="모든 플레이어 처치",["aim.btn_pickup_gun"]="떨어진 총 줍기",["aim.btn_shoot_murderer"]="살인자 사살",["aim.btn_throw_knife"]="칼 투척",["aim.dynamic_fov"]="동적 FOV 배율",["aim.enable_fov"]="FOV 원 활성화",["aim.fast_throw"]="칼 고속 투척",["aim.fov_center_dot"]="FOV 중앙 점 표시",["aim.fov_color"]="FOV 원 색상",["aim.fov_filled"]="FOV 원 채우기",["aim.fov_radius"]="FOV 반지름",["aim.fov_rainbow"]="무지개 FOV 원",["aim.fov_transparency"]="FOV 투명도",["aim.gun_aim_lock"]="총 에임 락",["aim.gun_auto_equip"]="총 자동 장착",["aim.gun_method"]="사격 방식",["aim.gun_silent_aim"]="총 사일런트 에임",["aim.highlight_target"]="활성 타겟 강조 표시",["aim.hit_chance"]="적중 확률 (%)",["aim.kill_aura"]="킬 오라",["aim.kill_aura_delay"]="킬 오라 공격 주기 (초)",["aim.kill_aura_range"]="킬 오라 범위",["aim.kill_aura_target_mode"]="킬 오라 대상 모드",["aim.knife_aim_lock"]="칼 에임 락",["aim.knife_auto_equip"]="칼 자동 장착",["aim.knife_method"]="칼 방식",["aim.knife_silent_aim"]="칼 사일런트 에임",["aim.knife_speed"]="투척 속도",["aim.manual_ping"]="수동 핑 (ms)",["aim.ping_multiplier"]="핑 배율",["aim.prediction_dot_color"]="예측 착탄점 색상",["aim.show_prediction_dot"]="예측 착탄점 표시",["aim.show_target_tracer"]="타겟 추적 선",["aim.smoothness"]="에임 부드러움",["aim.target_highlight_color"]="타겟 강조 색상",["aim.target_part"]="타겟 신체 부위",["aim.target_priority"]="타겟 우선순위",["aim.target_tracer_color"]="타겟 추적 선 색상",["aim.triggerbot"]="자동 발사",["aim.triggerbot_delay"]="트리거봇 지연 시간 (초)",["aim.triggerbot_visible_only"]="시야 내에 있을 때만 자동 발사",["aim.wall_check"]="벽 감지",["group.configuration"]="환경 설정",["group.flingactions"]="날리기 기능",["group.fovcircle"]="FOV 원",["group.generalaim"]="일반 에임 설정",["group.gunesp"]="총 드롭 ESP",["group.heroesp"]="영웅 ESP",["group.innocentesp"]="시민 ESP",["group.innocentutil"]="시민 유틸리티",["group.layoutcustom"]="레이아웃 편집",["group.localization"]="언어 및 지역 설정",["group.menu"]="메뉴",["group.movement"]="이동 설정",["group.murderer"]="살인자",["group.murdereresp"]="살인자 ESP",["group.playerteleport"]="플레이어 텔레포트",["group.prediction"]="핑 예측",["group.protection"]="보호 기능",["group.rolefling"]="역할별 날리기",["group.roleteleports"]="역할별 텔레포트",["group.sheriffesp"]="보안관 ESP",["group.sheriffhero"]="보안관 & 영웅",["group.themes"]="테마 설정",["group.trolling"]="트롤링",["group.uielements"]="UI 요소",["group.visualindicators"]="시각 표시기",["group.world"]="월드 환경",["group.worldteleports"]="월드 텔레포트",["interface.category_combat"]="전투 & 에임",["interface.category_misc"]="기타",["interface.category_player"]="플레이어 제어",["interface.category_teleports"]="텔레포트",["interface.category_visuals"]="비주얼 & ESP",["interface.edit_mode"]="편집 모드 활성화",["interface.floating_elements"]="플로팅 버튼",["interface.reset_layout"]="기본 레이아웃으로 초기화",["interface.save_layout"]="레이아웃 저장",["misc.auto_fling"]="자동 날리기",["misc.btn_fling_all"]="전체 플레이어 날리기",["misc.btn_fling_hero"]="영웅 날리기",["misc.btn_fling_innocents"]="전체 시민 날리기",["misc.btn_fling_murderer"]="살인자 날리기",["misc.btn_fling_player"]="선택한 플레이어 날리기",["misc.btn_fling_sheriff"]="보안관 날리기",["misc.fling_duration"]="날리기 지속 시간 (s)",["misc.invisible"]="완전 투명화",["misc.select_fling_player"]="날려버릴 플레이어 선택",["misc.target_role"]="타겟 역할",["misc.touch_fling"]="접촉 시 날리기",["player.antiafk"]="자리비움 방지",["player.antifling"]="안티 플링",["player.antivoid"]="낙하 방지",["player.fov"]="시야각",["player.fov_val"]="시야각 값",["player.gravity"]="중력 조절",["player.gravity_val"]="중력 값",["player.hipheight"]="공중 부양 높이",["player.hipheight_val"]="높이 값",["player.infinitejump"]="무한 점프",["player.invisible"]="투명화",["player.jumppower"]="점프력",["player.jumppower_val"]="점프 값",["player.noclip"]="벽 뚫기",["player.walkspeed"]="이동 속도",["player.walkspeed_val"]="속도 값",["settings.auto_detect"]="언어 자동 감지",["settings.custom_cursor"]="커스텀 커서",["settings.language"]="언어 선택",["settings.menu_keybind"]="메뉴 단축키",["settings.unload_script"]="스크립트 언로드",["tab.aimassist"]="에임 어시스트",["tab.error"]="오류",["tab.home"]="홈",["tab.info"]="정보",["tab.interface"]="인터페이스",["tab.misc"]="기타",["tab.player"]="플레이어",["tab.settings"]="설정",["tab.teleports"]="텔레포트",["tab.visuals"]="비주얼",["tp.auto_map_vote"]="자동 맵 투표 활성화",["tp.btn_gun"]="떨어진 총으로 텔레포트",["tp.btn_hero"]="영웅에게 텔레포트",["tp.btn_innocent"]="시민에게 텔레포트",["tp.btn_lobby"]="로비로 텔레포트",["tp.btn_map"]="맵으로 텔레포트",["tp.btn_murderer"]="살인자에게 텔레포트",["tp.btn_player"]="선택한 플레이어에게 텔레포트",["tp.btn_sheriff"]="보안관에게 텔레포트",["tp.preferred_map"]="선호하는 맵",["tp.select_player"]="플레이어 선택",["visuals.chams"]="Chams 발광",["visuals.chams_fill"]="발광 채우기 투명도",["visuals.chams_outline"]="외곽선 투명도",["visuals.color"]="%s 색상",["visuals.show_distance"]="거리 표시",["visuals.show_name"]="이름 표시",["visuals.show_role"]="역할 표시",["visuals.skeleton"]="스켈레톤 ESP",["visuals.tracers"]="트레이서 라인 ESP",["visuals.tracers_pos"]="트레이서 시작 위치",["coolwip.0"]="전투",["coolwip.1"]="살인자 자동 사격",["coolwip.2"]="조준을 원 안으로 제한",["coolwip.3"]="원 불투명도",["coolwip.4"]="이동 예측",["coolwip.5"]="칼 사거리 표시",["coolwip.6"]="칼 속도 배율",["coolwip.7"]="채팅에 역할 공개",["coolwip.8"]="역할 공개 단축키",["coolwip.9"]="플로팅 위치 초기화",["coolwip.10"]="이름 및 정보",["coolwip.11"]="ESP 상자",["coolwip.12"]="총 조준",["coolwip.13"]="칼 조준",["coolwip.label.Murderer Visuals"]="살인자 — 비주얼",["coolwip.label.Murderer Chams"]="살인자 — Chams 발광",["coolwip.label.Murderer ESP Color"]="살인자 색상",["coolwip.label.Murderer Color"]="살인자 색상",["coolwip.label.Murderer Name & Info"]="살인자 — 이름 및 정보",["coolwip.label.Murderer Box ESP"]="살인자 — ESP 상자",["coolwip.label.Murderer Tracers"]="살인자 — 트레이서 라인 ESP",["coolwip.label.Murderer Skeleton ESP"]="살인자 — 스켈레톤 ESP",["coolwip.label.Murderer Name"]="살인자 — 이름 표시",["coolwip.label.Murderer Distance"]="살인자 — 거리 표시",["coolwip.label.Sheriff & Hero Visuals"]="보안관 & 영웅 — 비주얼",["coolwip.label.Sheriff & Hero Chams"]="보안관 & 영웅 — Chams 발광",["coolwip.label.Sheriff & Hero ESP Color"]="보안관 & 영웅 색상",["coolwip.label.Sheriff & Hero Color"]="보안관 & 영웅 색상",["coolwip.label.Sheriff & Hero Name & Info"]="보안관 & 영웅 — 이름 및 정보",["coolwip.label.Sheriff & Hero Box ESP"]="보안관 & 영웅 — ESP 상자",["coolwip.label.Sheriff & Hero Tracers"]="보안관 & 영웅 — 트레이서 라인 ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="보안관 & 영웅 — 스켈레톤 ESP",["coolwip.label.Sheriff & Hero Name"]="보안관 & 영웅 — 이름 표시",["coolwip.label.Sheriff & Hero Distance"]="보안관 & 영웅 — 거리 표시",["coolwip.label.Innocent Visuals"]="시민 — 비주얼",["coolwip.label.Innocent Chams"]="시민 — Chams 발광",["coolwip.label.Innocent ESP Color"]="시민 색상",["coolwip.label.Innocent Color"]="시민 색상",["coolwip.label.Innocent Name & Info"]="시민 — 이름 및 정보",["coolwip.label.Innocent Box ESP"]="시민 — ESP 상자",["coolwip.label.Innocent Tracers"]="시민 — 트레이서 라인 ESP",["coolwip.label.Innocent Skeleton ESP"]="시민 — 스켈레톤 ESP",["coolwip.label.Innocent Name"]="시민 — 이름 표시",["coolwip.label.Innocent Distance"]="시민 — 거리 표시",["coolwip.label.Gun Drop Visuals"]="총 드롭 — 비주얼",["coolwip.label.Gun Drop Chams"]="총 드롭 — Chams 발광",["coolwip.label.Gun Drop ESP Color"]="총 드롭 색상",["coolwip.label.Gun Drop Color"]="총 드롭 색상",["coolwip.label.Gun Drop Name & Info"]="총 드롭 — 이름 및 정보",["coolwip.label.Gun Drop Box ESP"]="총 드롭 — ESP 상자",["coolwip.label.Gun Drop Tracers"]="총 드롭 — 트레이서 라인 ESP",["coolwip.label.Gun Drop Skeleton ESP"]="총 드롭 — 스켈레톤 ESP",["coolwip.label.Gun Drop Name"]="총 드롭 — 이름 표시",["coolwip.label.Gun Drop Distance"]="총 드롭 — 거리 표시"},["ar"]={["aim.auto_grab_gun"]="التقاط السلاح الساقط تلقائياً",["aim.auto_kill_all"]="قتل الجميع تلقائياً",["aim.auto_ping"]="بينغ تلقائي",["aim.auto_revenge"]="الانتقام التلقائي (وضع البطل)",["aim.auto_throw"]="رمي تلقائي للسكين",["aim.auto_throw_delay"]="فترة رمي السكين التلقائي (ث)",["aim.auto_throw_dist"]="مسافة الرمي التلقائي",["aim.btn_kill_all"]="قتل جميع اللاعبين",["aim.btn_pickup_gun"]="التقاط السلاح",["aim.btn_shoot_murderer"]="إطلاق النار على القاتل",["aim.btn_throw_knife"]="رمي السكين",["aim.dynamic_fov"]="تعديل ديناميكي لمجال الرؤية",["aim.enable_fov"]="تفعيل دائرة FOV",["aim.fast_throw"]="رمي سريع للسكين",["aim.fov_center_dot"]="إظهار نقطة مركز مجال الرؤية",["aim.fov_color"]="لون دائرة FOV",["aim.fov_filled"]="تعبئة دائرة FOV",["aim.fov_radius"]="نصف قطر FOV",["aim.fov_rainbow"]="دائرة مجال الرؤية الملونة",["aim.fov_transparency"]="شفافية FOV",["aim.gun_aim_lock"]="تثبيت التصويب للسلاح",["aim.gun_auto_equip"]="تجهيز السلاح تلقائياً",["aim.gun_method"]="طريقة الإطلاق",["aim.gun_silent_aim"]="تصويب صامت للسلاح",["aim.highlight_target"]="تمييز الهدف النشط",["aim.hit_chance"]="نسبة الإصابة (%)",["aim.kill_aura"]="هالة القتل",["aim.kill_aura_delay"]="فترة هالة القتل (ث)",["aim.kill_aura_range"]="نطاق هالة القتل",["aim.kill_aura_target_mode"]="وضع أهداف هالة القتل",["aim.knife_aim_lock"]="تثبيت التصويب للسكين",["aim.knife_auto_equip"]="تجهيز السكين تلقائياً",["aim.knife_method"]="طريقة السكين",["aim.knife_silent_aim"]="تصويب صامت للسكين",["aim.knife_speed"]="سرعة الرمي",["aim.manual_ping"]="بينغ يدوي (ms)",["aim.ping_multiplier"]="مضاعف البينغ",["aim.prediction_dot_color"]="لون نقطة التوقع",["aim.show_prediction_dot"]="إظهار نقطة التوقع",["aim.show_target_tracer"]="خط تتبع الهدف",["aim.smoothness"]="سلاسة التصويب",["aim.target_highlight_color"]="لون تمييز الهدف",["aim.target_part"]="الجزء المستهدف",["aim.target_priority"]="أولوية الهدف",["aim.target_tracer_color"]="لون خط التتبع",["aim.triggerbot"]="إطلاق نار تلقائي",["aim.triggerbot_delay"]="تأخير الإطلاق التلقائي (ث)",["aim.triggerbot_visible_only"]="إطلاق تلقائي فقط عند الرؤية",["aim.wall_check"]="فحص الجدران",["group.configuration"]="التكوين",["group.flingactions"]="إجراءات القذف",["group.fovcircle"]="دائرة مجال الرؤية",["group.generalaim"]="إعدادات التصويب العامة",["group.gunesp"]="كاشف السلاح الساقط",["group.heroesp"]="كاشف البطل",["group.innocentesp"]="كاشف الأبرياء",["group.innocentutil"]="أدوات البريء",["group.layoutcustom"]="تخصيص الواجهة",["group.localization"]="اللغة والترجمة",["group.menu"]="القائمة",["group.movement"]="الحركة",["group.murderer"]="القاتل",["group.murdereresp"]="كاشف القاتل",["group.playerteleport"]="الانتقال للاعب",["group.prediction"]="توقع البينغ",["group.protection"]="الحماية",["group.rolefling"]="قذف حسب الدور",["group.roleteleports"]="الانتقال حسب الدور",["group.sheriffesp"]="كاشف الشريف",["group.sheriffhero"]="الشريف والبطل",["group.themes"]="السمات",["group.trolling"]="المقالب",["group.uielements"]="عناصر الواجهة",["group.visualindicators"]="المؤشرات المرئية",["group.world"]="العالم",["group.worldteleports"]="انتقال العالم",["interface.category_combat"]="القتال والتصويب",["interface.category_misc"]="متنوع",["interface.category_player"]="تحكم اللاعب",["interface.category_teleports"]="الانتقال السريع",["interface.category_visuals"]="الرؤية & ESP",["interface.edit_mode"]="تفعيل وضع التعديل",["interface.floating_elements"]="الأزرار العائمة",["interface.reset_layout"]="استعادة التصميم الافتراضي",["interface.save_layout"]="حفظ التصميم",["misc.auto_fling"]="قذف تلقائي",["misc.btn_fling_all"]="قذف جميع اللاعبين",["misc.btn_fling_hero"]="قذف البطل",["misc.btn_fling_innocents"]="قذف جميع الأبرياء",["misc.btn_fling_murderer"]="قذف القاتل",["misc.btn_fling_player"]="قذف اللاعب المحدد",["misc.btn_fling_sheriff"]="قذف الشريف",["misc.fling_duration"]="مدة القذف (s)",["misc.invisible"]="اختفاء تام",["misc.select_fling_player"]="تحديد لاعب للقذف",["misc.target_role"]="الدور المستهدف",["misc.touch_fling"]="قذف عند اللمس",["player.antiafk"]="مضاد الطرد بسبب الخمول",["player.antifling"]="مضاد القذف",["player.antivoid"]="مضاد السقوط في الفراغ",["player.fov"]="مجال الرؤية",["player.fov_val"]="قيمة مجاز الرؤية",["player.gravity"]="الجاذبية",["player.gravity_val"]="قيمة الجاذبية",["player.hipheight"]="ارتفاع الجذع",["player.hipheight_val"]="قيمة الارتفاع",["player.infinitejump"]="قفز لانهائي",["player.invisible"]="الاختفاء",["player.jumppower"]="قوة القفز",["player.jumppower_val"]="قيمة القفز",["player.noclip"]="اختراق الجدران",["player.walkspeed"]="سرعة المشي",["player.walkspeed_val"]="قيمة السرعة",["settings.auto_detect"]="اكتشاف اللغة تلقائياً",["settings.custom_cursor"]="مؤشر مخصص",["settings.language"]="اختيار اللغة",["settings.menu_keybind"]="زر القائمة",["settings.unload_script"]="إلغاء تحميل السكريبت",["tab.aimassist"]="مساعد التصويب",["tab.error"]="خطأ",["tab.home"]="الرئيسية",["tab.info"]="المعلومات",["tab.interface"]="الواجهة",["tab.misc"]="متنوع",["tab.player"]="اللاعب",["tab.settings"]="الإعدادات",["tab.teleports"]="الانتقال السريع",["tab.visuals"]="الرؤية",["tp.auto_map_vote"]="تفعيل التصويت التلقائي للخريطة",["tp.btn_gun"]="الانتقال للسلاح الساقط",["tp.btn_hero"]="الانتقال للبطل",["tp.btn_innocent"]="الانتقال لبريء",["tp.btn_lobby"]="الانتقال للوبي",["tp.btn_map"]="الانتقال للخريطة",["tp.btn_murderer"]="الانتقال للقاتل",["tp.btn_player"]="الانتقال للاعب المحدد",["tp.btn_sheriff"]="الانتقال للشريف",["tp.preferred_map"]="الخريطة المفضلة",["tp.select_player"]="تحديد لاعب",["visuals.chams"]="توهج Chams",["visuals.chams_fill"]="شفافية التعبئة",["visuals.chams_outline"]="شفافية الإطار",["visuals.color"]="لون %s",["visuals.show_distance"]="إظهار المسافة",["visuals.show_name"]="إظهار الاسم",["visuals.show_role"]="إظهار الدور",["visuals.skeleton"]="الهيكل العظمي ESP",["visuals.tracers"]="خطوط التتبع ESP",["visuals.tracers_pos"]="موضع خطوط التتبع",["coolwip.0"]="القتال",["coolwip.1"]="إطلاق النار تلقائيًا على القاتل",["coolwip.2"]="حصر التصويب داخل الدائرة",["coolwip.3"]="عتامة الدائرة",["coolwip.4"]="توقع الحركة",["coolwip.5"]="إظهار مدى السكين",["coolwip.6"]="مضاعف سرعة السكين",["coolwip.7"]="كشف الأدوار في الدردشة",["coolwip.8"]="مفتاح كشف الأدوار",["coolwip.9"]="إعادة تعيين مواضع العناصر العائمة",["coolwip.10"]="الاسم والمعلومات",["coolwip.11"]="إطار ESP",["coolwip.12"]="التصويب بالمسدس",["coolwip.13"]="التصويب بالسكين",["coolwip.label.Murderer Visuals"]="القاتل — الرؤية",["coolwip.label.Murderer Chams"]="القاتل — توهج Chams",["coolwip.label.Murderer ESP Color"]="لون القاتل",["coolwip.label.Murderer Color"]="لون القاتل",["coolwip.label.Murderer Name & Info"]="القاتل — الاسم والمعلومات",["coolwip.label.Murderer Box ESP"]="القاتل — إطار ESP",["coolwip.label.Murderer Tracers"]="القاتل — خطوط التتبع ESP",["coolwip.label.Murderer Skeleton ESP"]="القاتل — الهيكل العظمي ESP",["coolwip.label.Murderer Name"]="القاتل — إظهار الاسم",["coolwip.label.Murderer Distance"]="القاتل — إظهار المسافة",["coolwip.label.Sheriff & Hero Visuals"]="الشريف والبطل — الرؤية",["coolwip.label.Sheriff & Hero Chams"]="الشريف والبطل — توهج Chams",["coolwip.label.Sheriff & Hero ESP Color"]="لون الشريف والبطل",["coolwip.label.Sheriff & Hero Color"]="لون الشريف والبطل",["coolwip.label.Sheriff & Hero Name & Info"]="الشريف والبطل — الاسم والمعلومات",["coolwip.label.Sheriff & Hero Box ESP"]="الشريف والبطل — إطار ESP",["coolwip.label.Sheriff & Hero Tracers"]="الشريف والبطل — خطوط التتبع ESP",["coolwip.label.Sheriff & Hero Skeleton ESP"]="الشريف والبطل — الهيكل العظمي ESP",["coolwip.label.Sheriff & Hero Name"]="الشريف والبطل — إظهار الاسم",["coolwip.label.Sheriff & Hero Distance"]="الشريف والبطل — إظهار المسافة",["coolwip.label.Innocent Visuals"]="بريء — الرؤية",["coolwip.label.Innocent Chams"]="بريء — توهج Chams",["coolwip.label.Innocent ESP Color"]="لون بريء",["coolwip.label.Innocent Color"]="لون بريء",["coolwip.label.Innocent Name & Info"]="بريء — الاسم والمعلومات",["coolwip.label.Innocent Box ESP"]="بريء — إطار ESP",["coolwip.label.Innocent Tracers"]="بريء — خطوط التتبع ESP",["coolwip.label.Innocent Skeleton ESP"]="بريء — الهيكل العظمي ESP",["coolwip.label.Innocent Name"]="بريء — إظهار الاسم",["coolwip.label.Innocent Distance"]="بريء — إظهار المسافة",["coolwip.label.Gun Drop Visuals"]="السلاح الساقط — الرؤية",["coolwip.label.Gun Drop Chams"]="السلاح الساقط — توهج Chams",["coolwip.label.Gun Drop ESP Color"]="لون السلاح الساقط",["coolwip.label.Gun Drop Color"]="لون السلاح الساقط",["coolwip.label.Gun Drop Name & Info"]="السلاح الساقط — الاسم والمعلومات",["coolwip.label.Gun Drop Box ESP"]="السلاح الساقط — إطار ESP",["coolwip.label.Gun Drop Tracers"]="السلاح الساقط — خطوط التتبع ESP",["coolwip.label.Gun Drop Skeleton ESP"]="السلاح الساقط — الهيكل العظمي ESP",["coolwip.label.Gun Drop Name"]="السلاح الساقط — إظهار الاسم",["coolwip.label.Gun Drop Distance"]="السلاح الساقط — إظهار المسافة"}}
+		local aliases = {["GUI"]="tab.interface",["Walk Speed"]="player.walkspeed",["Walk Speed Value"]="player.walkspeed_val",["Jump Power"]="player.jumppower",["Jump Power Value"]="player.jumppower_val",["Hip Height"]="player.hipheight",["Hip Height Value"]="player.hipheight_val",["Camera FOV"]="player.fov",["Camera FOV Value"]="player.fov_val",["Anti Fling"]="player.antifling",["Anti Void"]="player.antivoid",["Auto Grab Gun"]="aim.auto_grab_gun",["Grab Gun"]="aim.btn_pickup_gun",["Auto Kill All"]="aim.auto_kill_all",["Knife Aura"]="aim.kill_aura",["Knife Aura Range"]="aim.kill_aura_range",["Auto Ping"]="aim.auto_ping",["Auto Ping Prediction"]="aim.auto_ping",["Manual Ping"]="aim.manual_ping",["FOV Circle"]="group.fovcircle",["FOV Circle Radius"]="aim.fov_radius",["Aim Smoothing"]="aim.smoothness",["Aim Target Part"]="aim.target_part",["FOV Center Dot"]="aim.fov_center_dot",["Teleport to Dropped Gun"]="tp.btn_gun",["Fling All Innocent"]="misc.btn_fling_innocents",["Gun Drop Visuals"]="coolwip.label.Gun Drop Visuals",["Murderer Visuals"]="coolwip.label.Murderer Visuals",["Sheriff Visuals"]="group.sheriffesp",["Hero Visuals"]="group.heroesp",["Innocent Visuals"]="coolwip.label.Innocent Visuals",["Tracer Origin"]="visuals.tracers_pos",["Player Teleports"]="group.playerteleport",["Floating UI Elements"]="interface.floating_elements",["Floating Control Layout"]="group.layoutcustom",["Edit Floating Layout"]="interface.edit_mode",["Save Floating Layout"]="interface.save_layout",["Menu Preferences"]="group.menu",["Menu Toggle Keybind"]="settings.menu_keybind",["Unload Coolwip Hub"]="settings.unload_script",["Language"]="settings.language",["Themes"]="group.themes",["Auto Map Vote"]="tp.auto_map_vote",["Target Part"]="aim.target_part",["Check for Walls"]="aim.wall_check",["Aim Circle"]="group.fovcircle",["Circle Radius"]="aim.fov_radius",["Filled Circle"]="aim.fov_filled",["Circle Color"]="aim.fov_color",["Read Ping Automatically"]="aim.auto_ping",["Auto Throw Range"]="aim.auto_throw_dist",["Combat"]="coolwip.0",["Auto Shoot Murderer"]="coolwip.1",["Limit Aim to Circle"]="coolwip.2",["Circle Opacity"]="coolwip.3",["Movement Prediction"]="coolwip.4",["Show Knife Range"]="coolwip.5",["Knife Speed Multiplier"]="coolwip.6",["Expose Roles in Chat"]="coolwip.7",["Expose Roles Keybind"]="coolwip.8",["Reset Floating Positions"]="coolwip.9",["Name & Info"]="coolwip.10",["Box ESP"]="coolwip.11",["Gun Aim"]="coolwip.12",["Knife Aim"]="coolwip.13",["Murderer Chams"]="coolwip.label.Murderer Chams",["Murderer ESP Color"]="coolwip.label.Murderer ESP Color",["Murderer Color"]="coolwip.label.Murderer Color",["Murderer Name & Info"]="coolwip.label.Murderer Name & Info",["Murderer Box ESP"]="coolwip.label.Murderer Box ESP",["Murderer Tracers"]="coolwip.label.Murderer Tracers",["Murderer Skeleton ESP"]="coolwip.label.Murderer Skeleton ESP",["Murderer Name"]="coolwip.label.Murderer Name",["Murderer Distance"]="coolwip.label.Murderer Distance",["Sheriff & Hero Visuals"]="coolwip.label.Sheriff & Hero Visuals",["Sheriff & Hero Chams"]="coolwip.label.Sheriff & Hero Chams",["Sheriff & Hero ESP Color"]="coolwip.label.Sheriff & Hero ESP Color",["Sheriff & Hero Color"]="coolwip.label.Sheriff & Hero Color",["Sheriff & Hero Name & Info"]="coolwip.label.Sheriff & Hero Name & Info",["Sheriff & Hero Box ESP"]="coolwip.label.Sheriff & Hero Box ESP",["Sheriff & Hero Tracers"]="coolwip.label.Sheriff & Hero Tracers",["Sheriff & Hero Skeleton ESP"]="coolwip.label.Sheriff & Hero Skeleton ESP",["Sheriff & Hero Name"]="coolwip.label.Sheriff & Hero Name",["Sheriff & Hero Distance"]="coolwip.label.Sheriff & Hero Distance",["Innocent Chams"]="coolwip.label.Innocent Chams",["Innocent ESP Color"]="coolwip.label.Innocent ESP Color",["Innocent Color"]="coolwip.label.Innocent Color",["Innocent Name & Info"]="coolwip.label.Innocent Name & Info",["Innocent Box ESP"]="coolwip.label.Innocent Box ESP",["Innocent Tracers"]="coolwip.label.Innocent Tracers",["Innocent Skeleton ESP"]="coolwip.label.Innocent Skeleton ESP",["Innocent Name"]="coolwip.label.Innocent Name",["Innocent Distance"]="coolwip.label.Innocent Distance",["Gun Drop Chams"]="coolwip.label.Gun Drop Chams",["Gun Drop ESP Color"]="coolwip.label.Gun Drop ESP Color",["Gun Drop Color"]="coolwip.label.Gun Drop Color",["Gun Drop Name & Info"]="coolwip.label.Gun Drop Name & Info",["Gun Drop Box ESP"]="coolwip.label.Gun Drop Box ESP",["Gun Drop Tracers"]="coolwip.label.Gun Drop Tracers",["Gun Drop Skeleton ESP"]="coolwip.label.Gun Drop Skeleton ESP",["Gun Drop Name"]="coolwip.label.Gun Drop Name",["Gun Drop Distance"]="coolwip.label.Gun Drop Distance"}
+		local languages = { English = "en", Portuguese = "pt", Spanish = "es", Russian = "ru", Chinese = "zh", Vietnamese = "vi", Turkish = "tr", German = "de", French = "fr", Japanese = "ja", Korean = "ko", Arabic = "ar" }
+		local preferences = { Language = "en", Theme = "CoolwipRed" }
+		local preferencePath = "CoolwipHub_Preferences.json"
+		if type(readfile) == "function" then
+			local success, data = pcall(function() return httpService:JSONDecode(readfile(preferencePath)) end)
+			if success and type(data) == "table" then
+				if translations[data.Language] then preferences.Language = data.Language end
+				if type(data.Theme) == "string" and v:GetThemes()[data.Theme] then preferences.Theme = data.Theme end
+				if type(data.Accent) == "string" and data.Accent:match("^%x%x%x%x%x%x$") then preferences.Accent = data.Accent end
+			end
+		end
+		local function save()
+			if type(writefile) == "function" then pcall(function() writefile(preferencePath, httpService:JSONEncode(preferences)) end) end
+		end
+		local function normalized(text) return text:lower():gsub("[%s_%-]", "") end
+		local keyForText = {}
+		for key, text in pairs(translations.en) do if not text:find("%%") then keyForText[normalized(text)] = key end end
+		for text, key in pairs(aliases) do keyForText[normalized(text)] = key end
+		local records, connections = {}, {}
+		local function translate(text)
+			if preferences.Language == "en" then return text end
+			local key = keyForText[normalized(text)]
+			return key and translations[preferences.Language][key] or text
+		end
+		local function applyRecord(record)
+			if not record.Object.Parent then return end
+			local text = translate(record.Base)
+			record.Rendered = text
+			if record.Object.Text ~= text then record.Object.Text = text end
+		end
+		local function watch(object)
+			if not (object:IsA("TextLabel") or object:IsA("TextButton")) or records[object] then return end
+			local record = { Object = object, Base = object.Text }; records[object] = record
+			connections[#connections + 1] = fn3(object:GetPropertyChangedSignal("Text"):Connect(function()
+				if object.Text == record.Rendered then return end
+				record.Base = object.Text; applyRecord(record)
+			end))
+			applyRecord(record)
+		end
+		local function setLanguage(language)
+			if not translations[language] then return end
+			preferences.Language = language
+			for object, record in pairs(records) do if object.Parent then applyRecord(record) else records[object] = nil end end
+			save()
+		end
+		tbl.NewInterface.SetLanguage = setLanguage
+		tbl.NewInterface.Translate = translate
+		local themeSection = v18:Section({ Title = "Themes", Icon = "palette", Box = true, BoxBorder = true, Opened = true })
+		local themeNames = {}
+		for name in pairs(v:GetThemes()) do if name ~= "CoolwipCustom" then themeNames[#themeNames + 1] = name end end
+		table.sort(themeNames)
+		local function applyAppearance()
+			local theme = preferences.Theme
+			if preferences.Accent then
+				local custom = table.clone(v:GetThemes()[theme]); custom.Name = "CoolwipCustom"
+				local accent = Color3.fromHex(preferences.Accent)
+				for _, key in ipairs({ "Primary", "Button", "Toggle", "Slider", "Checkbox", "Icon" }) do custom[key] = accent end
+				v:AddTheme(custom); theme = custom.Name
+			end
+			v:SetTheme(theme)
+		end
+		local themePicker = themeSection:Dropdown({ Title = "Theme", Values = themeNames, Value = preferences.Theme, Callback = function(name)
+			name = type(name) == "table" and name.Title or name
+			if v:GetThemes()[name] then preferences.Theme = name; applyAppearance(); save() end
+		end })
+		local initializing = true
+		local accentPicker = themeSection:Colorpicker({ Title = "Accent Color", Default = preferences.Accent and Color3.fromHex(preferences.Accent) or coolwipRed.Primary, Callback = function(color)
+			if initializing then return end
+			preferences.Accent = color:ToHex(); applyAppearance(); save()
+		end })
+		initializing = false
+		themeSection:Button({ Title = "Restore Coolwip Red Theme", Icon = "rotate-ccw", Callback = function()
+			preferences.Theme, preferences.Accent = "CoolwipRed", nil
+			initializing = true; accentPicker:Update(coolwipRed.Primary); initializing = false
+			themePicker:Select("CoolwipRed"); applyAppearance(); save()
+		end })
+		local localization = v18:Section({ Title = "Language & Localization", Icon = "globe", Box = true, BoxBorder = true, Opened = true })
+		local languageNames, currentLanguage = {}, "English"
+		for name, code in pairs(languages) do languageNames[#languageNames + 1] = name; if code == preferences.Language then currentLanguage = name end end
+		table.sort(languageNames)
+		local languagePicker = localization:Dropdown({ Title = "Language", Values = languageNames, Value = currentLanguage, Callback = function(name)
+			name = type(name) == "table" and name.Title or name
+			if languages[name] then setLanguage(languages[name]) end
+		end })
+		localization:Paragraph({ Title = "Menu translations", Desc = "Uses the included translations for matching menu labels. Custom labels without a translation stay in English. Role announcements keep their current wording." })
+		localization:Button({ Title = "Auto-Detect Language", Icon = "globe", Callback = function()
+			local detected = tostring(obj.LocalizationService.RobloxLocaleId):match("^[a-z]+") or "en"
+			if not translations[detected] then detected = "en" end
+			for name, code in pairs(languages) do if code == detected then languagePicker:Select(name); break end end
+			setLanguage(detected)
+		end })
+		local root = v10.UIElements.Main
+		if root then
+			for _, descendant in ipairs(root:GetDescendants()) do watch(descendant) end
+			connections[#connections + 1] = fn3(root.DescendantAdded:Connect(watch))
+		end
+		applyAppearance()
+		table.insert(tbl.NewFeatures.Cleanups, function()
+			for _, connection in ipairs(connections) do fn4(connection) end
+			table.clear(connections); table.clear(records)
+		end)
+	end
+
+	-- END_IMPORTED_FEATURES
 
 	return tbl
 end
