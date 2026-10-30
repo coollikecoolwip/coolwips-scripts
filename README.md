@@ -1,52 +1,55 @@
 # CoolWip Scripts
 
-A curated collection of Roblox-related scripts maintained by [coollikecoolwip](https://github.com/coollikecoolwip). It contains a mix of original work, modifications, and scripts from other developers. **Being hosted here does not mean every script was written by the repository maintainer.**
+A curated collection of Roblox-related scripts maintained by [coollikecoolwip](https://github.com/coollikecoolwip). This repository may include original, modified, and third-party code. **Hosting a script here does not mean the maintainer wrote the original code.**
 
-## Browse the collection
+## Current scripts
 
-- **[Complete script index](docs/SCRIPT_INDEX.md)** — all 20 root-level script files, organized by purpose
-- **[Credits and authorship](docs/CREDITS.md)** — known third-party entries and how to credit their creators
-- **[Repository structure](docs/STRUCTURE.md)** — what belongs in each folder and how existing URLs are preserved
-- **[Safety and compatibility](docs/SECURITY.md)** — review before running, remote dependencies, and reporting concerns
+All current scripts remain at their **original root-level paths**, preserving the existing raw GitHub URLs.
 
-### Types of scripts
-
-| Category | Examples |
+| Script | Purpose |
 | --- | --- |
-| Hubs | [CoolwipHub.lua](CoolwipHub.lua), [VisionHub.lua](VisionHub.lua) |
-| Automation and interactions | [AntiAFK.lua](AntiAFK.lua), [Follow.lua](Follow.lua), [PromptPrecision.lua](PromptPrecision.lua) |
-| Combat and movement | [Aimbot.lua](Aimbot.lua), [AntiFling.lua](AntiFling.lua), [FakeLag.lua](FakeLag.lua) |
-| Visual and player tools | [BetterESP.lua](BetterESP.lua), [MiniMap.lua](MiniMap.lua), [Spectate.lua](Spectate.lua) |
-| Game-specific and experimental | [MM2ESP.lua](MM2ESP.lua), [FNAF-Coop.lua](FNAF-Coop.lua), [BetaTest.lua](BetaTest.lua) |
+| [`Aimbot.lua`](Aimbot.lua) | Aiming utility |
+| [`AntiAFK.lua`](AntiAFK.lua) | AFK-related utility |
+| [`AntiFling.lua`](AntiFling.lua) | Fling protection |
+| [`BetaTest.lua`](BetaTest.lua) | Development/test file |
+| [`BetterESP.lua`](BetterESP.lua) | ESP/visual utility |
+| [`CoolwipHub.lua`](CoolwipHub.lua) | Hub script |
+| [`CoolwipHubAutoFarm.lua`](CoolwipHubAutoFarm.lua) | Hub automation |
+| [`FNAF-Coop.lua`](FNAF-Coop.lua) | FNAF Co-op specific script |
+| [`FakeLag.lua`](FakeLag.lua) | Lag simulation |
+| [`FlingAll.lua`](FlingAll.lua) | Fling utility |
+| [`Follow.lua`](Follow.lua) | Player following |
+| [`MM2ESP.lua`](MM2ESP.lua) | MM2 ESP |
+| [`MiniMap.lua`](MiniMap.lua) | Minimap |
+| [`PromptPrecision.lua`](PromptPrecision.lua) | Prompt interaction utility |
+| [`RivalsAimbot.lua`](RivalsAimbot.lua) | Rivals aiming utility |
+| [`Say.iy`](Say.iy) | Chat-related file (nonstandard extension) |
+| [`Say.lua`](Say.lua) | Chat utility |
+| [`Spectate.lua`](Spectate.lua) | Spectating tool |
+| [`VisionHub.lua`](VisionHub.lua) | Vision Hub (third-party) |
+| [`VisionHubAutoFarm.lua`](VisionHubAutoFarm.lua) | Vision Hub automation (third-party-derived) |
 
-The file names suggest their intended purposes; descriptions are **not** promises of support, safety, or currently working functionality.
+## Previous versions
 
-## Existing script URLs stay the same
+**105 historical snapshots** are available in the **[versions archive](versions/README.md)**. These were recovered from actual Git history and named by commit date and abbreviated commit SHA. They are historical records, not tested releases.
 
-**All existing scripts remain at the repository root.** No root-level script has been renamed, moved, or replaced as part of this documentation reorganization.
+## Folder structure
 
-For example, this root path remains the canonical location for the current file:
+```text
+coolwips-scripts/
+├── *.lua / Say.iy     # current scripts (original URLs preserved)
+├── README.md          # repository overview
+└── versions/          # historical snapshots, archive index, legacy placeholder
+```
 
-`https://raw.githubusercontent.com/coollikecoolwip/coolwips-scripts/main/VisionHub.lua`
+Existing script paths are intentionally kept stable. The `versions/` folder is the **only directory at the repository root**.
 
-New folders are for organizing **future source work and documentation**, not for silently relocating files that users may already load by URL. See [the structure policy](docs/STRUCTURE.md).
+## Authorship and credits
 
-## Ownership and attribution
+The maintainer has confirmed that `VisionHub.lua` and `VisionHubAutoFarm.lua` are **not their original creations**. Original authors and source/licensing details still need verification. The authorship of other files is not independently established by this index; a commit or filename does not prove ownership. Respect upstream licensing and add attribution when verified.
 
-The maintainer has identified **VisionHub.lua** and **VisionHubAutoFarm.lua** as third-party, not original creations. Their original author/source details are not yet confirmed in this repository. **Authorship of the remaining files has not been independently verified.** See [CREDITS.md](docs/CREDITS.md) for how to add or correct attribution.
+## Security, compatibility, and reports
 
-A repository-wide open-source license is **not** implied for external code. Do not assume reuse or redistribution rights without checking each script's origin and licensing terms.
+These scripts have not been independently reviewed for safety or compatibility. Review all source and remote dependencies before running anything, including scripts downloaded by `HttpGet`/`loadstring`. Never expose passwords, session cookies, authentication tokens, or passkeys. Do not disable antivirus to run a script. Unauthorized executors or game modifications may violate Roblox or individual game rules.
 
-## Using the scripts
-
-Open a file, inspect its code, identify external dependencies and any executor-specific APIs, and independently verify compatibility before considering running it. Unauthorized Roblox scripts/executors may violate Roblox or game rules and can cause account restrictions.
-
-Never provide credentials, session cookies, authentication tokens, or personal data to an untrusted script. Do not disable security tools just to execute one.
-
-## Development and feedback
-
-[Open an issue](https://github.com/coollikecoolwip/coolwips-scripts/issues) with the filename, game, environment, expected behavior, actual behavior, reproduction steps, and any errors. For inaccurate credits or a redistribution concern, include the original creator/source link if known.
-
----
-
-*Collection maintained by coollikecoolwip. Credit belongs to each script's respective author.*
+To report a bug or correct credit, [open an issue](https://github.com/coollikecoolwip/coolwips-scripts/issues) with the affected filename, relevant game and executor environment, errors, and original source/author link when known. Do not post credentials.
