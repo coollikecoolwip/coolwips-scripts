@@ -1,133 +1,52 @@
 # CoolWip Scripts
 
-### Roblox Scripts • Automation • ESP • Utilities • Custom Hubs
+A curated collection of Roblox-related scripts maintained by [coollikecoolwip](https://github.com/coollikecoolwip). It contains a mix of original work, modifications, and scripts from other developers. **Being hosted here does not mean every script was written by the repository maintainer.**
 
-**Developed by [coollikecoolwip](https://github.com/coollikecoolwip)**
+## Browse the collection
 
-A growing collection of custom Roblox Luau scripts focused on automation, player utilities, visual enhancements, movement, and configurable gameplay features.
+- **[Complete script index](docs/SCRIPT_INDEX.md)** — all 20 root-level script files, organized by purpose
+- **[Credits and authorship](docs/CREDITS.md)** — known third-party entries and how to credit their creators
+- **[Repository structure](docs/STRUCTURE.md)** — what belongs in each folder and how existing URLs are preserved
+- **[Safety and compatibility](docs/SECURITY.md)** — review before running, remote dependencies, and reporting concerns
 
-This repository contains everything from lightweight standalone scripts to more advanced multifunction hubs.
+### Types of scripts
 
----
+| Category | Examples |
+| --- | --- |
+| Hubs | [CoolwipHub.lua](CoolwipHub.lua), [VisionHub.lua](VisionHub.lua) |
+| Automation and interactions | [AntiAFK.lua](AntiAFK.lua), [Follow.lua](Follow.lua), [PromptPrecision.lua](PromptPrecision.lua) |
+| Combat and movement | [Aimbot.lua](Aimbot.lua), [AntiFling.lua](AntiFling.lua), [FakeLag.lua](FakeLag.lua) |
+| Visual and player tools | [BetterESP.lua](BetterESP.lua), [MiniMap.lua](MiniMap.lua), [Spectate.lua](Spectate.lua) |
+| Game-specific and experimental | [MM2ESP.lua](MM2ESP.lua), [FNAF-Coop.lua](FNAF-Coop.lua), [BetaTest.lua](BetaTest.lua) |
 
-## Script Collection
+The file names suggest their intended purposes; descriptions are **not** promises of support, safety, or currently working functionality.
 
-### Main Hubs
+## Existing script URLs stay the same
 
-| Script | Description |
-|---|---|
-| `CoolwipHub.lua` | Main CoolWip script hub |
-| `VisionHub.lua` | Vision Hub multifunction script |
-| `CoolwipHubAutoFarm.lua` | CoolWip Hub automation script |
-| `VisionHubAutoFarm.lua` | Vision Hub farming automation |
-| `BetaTest.lua` | Experimental development and testing |
+**All existing scripts remain at the repository root.** No root-level script has been renamed, moved, or replaced as part of this documentation reorganization.
 
-### Combat & Player Utilities
+For example, this root path remains the canonical location for the current file:
 
-| Script | Description |
-|---|---|
-| `Aimbot.lua` | Custom aiming assistance |
-| `RivalsAimbot.lua` | Aimbot designed for Roblox Rivals |
-| `AntiFling.lua` | Protection against player fling effects |
-| `FlingAll.lua` | Player fling utility |
-| `FakeLag.lua` | Simulated lag behavior |
+`https://raw.githubusercontent.com/coollikecoolwip/coolwips-scripts/main/VisionHub.lua`
 
-### ESP & Visual Tools
+New folders are for organizing **future source work and documentation**, not for silently relocating files that users may already load by URL. See [the structure policy](docs/STRUCTURE.md).
 
-| Script | Description |
-|---|---|
-| `BetterESP.lua` | Enhanced ESP utility |
-| `MM2ESP.lua` | ESP designed for Murder Mystery 2 |
-| `MiniMap.lua` | In-game minimap utility |
-| `Spectate.lua` | Player spectating utility |
+## Ownership and attribution
 
-### Automation & Quality of Life
+The maintainer has identified **VisionHub.lua** and **VisionHubAutoFarm.lua** as third-party, not original creations. Their original author/source details are not yet confirmed in this repository. **Authorship of the remaining files has not been independently verified.** See [CREDITS.md](docs/CREDITS.md) for how to add or correct attribution.
 
-| Script | Description |
-|---|---|
-| `AntiAFK.lua` | AFK prevention utility |
-| `Follow.lua` | Player-following utility |
-| `PromptPrecision.lua` | Interaction prompt utility |
+A repository-wide open-source license is **not** implied for external code. Do not assume reuse or redistribution rights without checking each script's origin and licensing terms.
 
-### Game-Specific & Miscellaneous
+## Using the scripts
 
-| Script | Description |
-|---|---|
-| `FNAF-Coop.lua` | Utility for FNAF Co-op |
-| `Say.lua` | Chat-related utility |
-| `Say.iy` | Additional Say utility file |
+Open a file, inspect its code, identify external dependencies and any executor-specific APIs, and independently verify compatibility before considering running it. Unauthorized Roblox scripts/executors may violate Roblox or game rules and can cause account restrictions.
 
-*Descriptions summarize each script's apparent purpose. Exact features and compatibility depend on the individual implementation.*
+Never provide credentials, session cookies, authentication tokens, or personal data to an untrusted script. Do not disable security tools just to execute one.
+
+## Development and feedback
+
+[Open an issue](https://github.com/coollikecoolwip/coolwips-scripts/issues) with the filename, game, environment, expected behavior, actual behavior, reproduction steps, and any errors. For inaccurate credits or a redistribution concern, include the original creator/source link if known.
 
 ---
 
-## Project Highlights
-
-**20 scripts in the collection**
-
-The repository includes scripts covering:
-
-- Advanced script hubs
-- Automated farming and gameplay tasks
-- ESP and visual utilities
-- Combat and aiming tools
-- Movement and player interaction
-- Anti-AFK functionality
-- Spectating and minimap features
-- Game-specific utilities
-- Experimental features and testing
-
-## Getting Started
-
-1. Browse the repository and select a script.
-2. Open the corresponding file to inspect its source code.
-3. Check whether the script supports your game and execution environment.
-4. Copy the script into a compatible Luau execution environment.
-5. Configure any available settings.
-
-**Important:** Compatibility varies between games, Roblox updates, and execution environments. Universal support is not guaranteed.
-
-## Development Priorities
-
-This project focuses on:
-
-- **Reliability:** Fixing bugs and improving error handling.
-- **Performance:** Reducing unnecessary resource usage.
-- **User Interface:** Improving script controls and customization.
-- **Compatibility:** Maintaining functionality where possible.
-- **Features:** Expanding existing tools and developing new utilities.
-- **Maintainability:** Keeping code organized and easier to update.
-
-## Issues & Feature Requests
-
-Found a problem or have a suggestion?
-
-Use the repository's **Issues** section to submit feedback.
-
-When reporting bugs, include the script name, game, execution environment, reproduction steps, and any relevant errors.
-
-## Security
-
-Always review code before execution.
-
-- Use source files from the official repository.
-- Avoid modified scripts distributed by unknown third parties.
-- Never provide Roblox passwords, session cookies, or authentication tokens.
-- Do not disable antivirus protection to execute scripts.
-- Report unexpected network requests or suspicious behavior.
-
-## Disclaimer
-
-This project is independently developed and is not affiliated with or endorsed by Roblox Corporation.
-
-Some scripts may violate Roblox's Terms of Use or individual game rules. Using unauthorized third-party executors or gameplay modifications can result in account restrictions.
-
-Scripts are provided as-is without guarantees of safety, uninterrupted functionality, or compatibility.
-
----
-
-### CoolWip Scripts
-
-**Created and maintained by coollikecoolwip**
-
-*Building, experimenting, improving.*
+*Collection maintained by coollikecoolwip. Credit belongs to each script's respective author.*
