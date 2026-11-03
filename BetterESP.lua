@@ -1,44 +1,39 @@
--- Better ESP 4.4 | Standalone client / executor edition
--- P: menu. Use the on-screen button on touch devices. Unload stops everything.
--- Optional gethui/getgenv support; no remote loader or external dependencies.
--- Only replicated/streamed instances are visible to this client.
-
 local Config = {
     UpdateInterval = 0.2,
     TeamCacheSeconds = 1.5,
-    MaxDistance = 2000, -- studs; math.huge removes the distance filter
-    MaxVisible = 128, -- tracking is unlimited; rendering is bounded
+    MaxDistance = 2000,
+    MaxVisible = 128,
     ShowNPCs = true,
+    DetectSkinnedRigs = true,
+    DetectBodyAssemblies = true,
+    DetectCreatureParts = true,
     ShowPlayers = true,
     ShowHealth = false,
     ShowDistance = true,
     ShowNames = true,
-    LabelHeight = 1, -- clearance above the head/model top, in studs
+    LabelHeight = 1,
     LabelWidth = 140,
     NameTextSize = 10,
     ShowUsernames = false,
     FilledChams = true,
     FillTransparency = 0.65,
     ShowDead = false,
-    TeamMode = "Off", -- Off / Colors / Enemies only
+    TeamMode = "Off",
     ShowTeamSource = false,
-    Occluded = false, -- true respects walls
+    Occluded = false,
     PlayerColor = Color3.fromRGB(255, 170, 70),
     NPCColor = Color3.fromRGB(255, 90, 110),
     AllyColor = Color3.fromRGB(80, 220, 160),
     EnemyColor = Color3.fromRGB(255, 100, 100),
     NPCTags = {"NPC", "Enemy", "Enemies", "Monster", "Mob", "Bot", "Creature"},
-    -- In your own game, tagging non-Humanoid NPC models is the most reliable option.
-    DetectAnimationControllers = true, -- can include animated props; toggle in menu
+
+    DetectAnimationControllers = true,
     MetadataDepth = 2,
     MetadataNodeLimit = 64,
     AncestorDepth = 4,
-    -- Optional game-specific adapters. Return nil to use automatic detection.
-    -- IsNPC(model) -> boolean?  (false explicitly excludes a model)
+
     IsNPC = nil,
-    -- ResolveTeam(playerOrNil, modelOrNil) -> {key="faction", value="red",
-    --     color=Color3.fromRGB(255,0,0), source="custom"}?
-    -- Use the SAME key and comparable value for local player and targets.
+
     ResolveTeam = nil,
 }
 
@@ -58,7 +53,6 @@ assert(LocalPlayer, "ESP requires a running Roblox client")
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
 assert(PlayerGui, "PlayerGui did not become available; retry after joining")
 
--- Optional APIs are guarded. Standard client APIs are sufficient as fallback.
 local environment = _G
 if type(getgenv) == "function" then
     local ok, value = pcall(getgenv)
@@ -84,7 +78,6 @@ if type(gethui) == "function" then
 end
 if rootGui.Parent ~= guiParent then rootGui.Parent = guiParent end
 
--- Clean up a prior copy even if it used a different UI parent.
 local function stopPrevious(parent)
     local previous = parent:FindFirstChild("UniversalESP4")
     if previous and previous ~= rootGui then
@@ -136,8 +129,6 @@ local function normalize(s)
     return string.lower(tostring(s)):gsub("[%s_%-]", "")
 end
 
--- Only explicit affiliation fields qualify. Generic "Color", skin colors,
--- display names, and arbitrary folder names are deliberately not team evidence.
 local fieldOrder = {
     "team", "teamid", "teamname", "faction", "factionid", "factionname",
     "allegiance", "squad", "squadid", "squadname", "coalition",
@@ -148,7 +139,7 @@ local fieldRank, fieldGroup = {}, {}
 for i, field in ipairs(fieldOrder) do
     fieldRank[field] = i
     local group = field:gsub("userid$", ""):gsub("id$", ""):gsub("name$", "")
-    -- IDs and names cannot safely be compared without a game's mapping table.
+
     if group ~= "owner" and field:match("id$") then group = group .. "id" end
     fieldGroup[field] = group
 end
@@ -196,7 +187,7 @@ local function readMetadata(container, shallow)
         index = index + 1
         examined = examined + 1
         local node, depth = item[1], item[2]
-        -- Do not inspect other characters or large model trees as metadata.
+
         for name, value in pairs(node:GetAttributes()) do consider(name, value, node.Name) end
         if node:IsA("ValueBase") then consider(node.Name, node.Value, container.Name) end
         if depth < (shallow and 1 or Config.MetadataDepth) then
@@ -226,15 +217,14 @@ local function resolveTeam(player, model, now)
             end
         end
     end
-    -- Explicit custom metadata takes precedence over built-in Roblox Teams.
+
     info = info or (player and readMetadata(player)) or (model and readMetadata(model))
     if not info and model then
         local parent = model.Parent
         for _ = 1, Config.AncestorDepth do
             if not parent or parent == workspace or parent == game then break end
             info = readMetadata(parent, true)
-            -- Explicit named affiliation containers, e.g. Workspace.Factions.Red.NPC.
-            -- Arbitrary folders such as "Enemies" are not proof of an affiliation.
+
             if not info and parent.Parent then
                 local groups = {teams="team", factions="faction", squads="squad", clans="clan", coalitions="coalition"}
                 local group = groups[normalize(parent.Parent.Name)]
@@ -258,6 +248,47 @@ local function relation(a, b)
     if not a or not b or a.key ~= b.key then return "Unknown" end
     return a.value == b.value and "Ally" or "Enemy"
 end
+
+local function anatomyRole(obj)
+    if not obj:IsA("MeshPart") then return nil end
+    local n = string.lower(obj.Name)
+    if n:find("torso",1,true) or n:find("chest",1,true) or n == "body" then return "core" end
+    if n:find("forearm",1,true) or n:find("upperarm",1,true) or n:find("hand",1,true) then return "arm" end
+    if n:find("thigh",1,true) or n:find("shin",1,true) or n:find("foot",1,true) then return "leg" end
+    return nil
+end
+local function isStructuralNPC(model, hints)
+    if not hints or not model:IsA("Model") or model:GetAttribute("ESPExclude") == true then return false end
+    if Config.DetectSkinnedRigs and hints.bones then
+        for bone in pairs(hints.bones) do
+            if bone:IsDescendantOf(model) and bone:FindFirstAncestorWhichIsA("Model") == model
+                and bone:FindFirstAncestorWhichIsA("MeshPart") then return true end
+        end
+    end
+    if Config.DetectBodyAssemblies and hints.anatomy then
+        local roles = {}
+        for part in pairs(hints.anatomy) do
+            if part:IsDescendantOf(model) and part:FindFirstAncestorWhichIsA("Model") == model then
+                local role = anatomyRole(part)
+                if role then roles[role] = true end
+                if roles.core and roles.arm and roles.leg then return true end
+            end
+        end
+    end
+    return false
+end
+local function isKnownMonster(obj)
+    return obj:IsA("Model") and obj.Name == "Grinsworth" and obj.Parent
+        and obj.Parent.Name == "GrinsworthBody" and obj.Parent.Parent == workspace
+end
+local function isCreatureVisual(obj)
+    return obj:IsA("Model") and obj.Name:match("^CreatureVisual%d+$") ~= nil
+        and obj.Parent and obj.Parent.Name == "StillWaterFX" and obj.Parent.Parent == workspace
+end
+local function isCreaturePart(obj)
+    return Config.DetectCreatureParts and obj:IsA("BasePart")
+        and (obj.Name:match("^Creature%d+$") ~= nil or obj.Name:match("^Creature%d+_%d+$") ~= nil)
+end
 local function hasNPCTag(model)
     for _, tag in ipairs(Config.NPCTags) do if Tags:HasTag(model, tag) then return true end end
     return model:GetAttribute("IsNPC") == true or model:GetAttribute("NPC") == true
@@ -266,14 +297,15 @@ local function getOwner(model)
     local node = model
     while node and node ~= workspace do
         if characters[node] then return characters[node], node end
-        -- A despawning player rig must not become an NPC between events.
+
         if retiredCharacters[node] then return LocalPlayer, node end
         node = node.Parent
     end
     return nil, nil
 end
 local function chooseRoot(model)
-    for _, name in ipairs({"HumanoidRootPart", "Head", "RootPart", "Torso", "UpperTorso"}) do
+    if model:IsA("BasePart") then return model end
+    for _, name in ipairs({"HumanoidRootPart", "Head", "RootPart", "Torso", "UpperTorso", "ListenerTorso"}) do
         local part = model:FindFirstChild(name)
         if part and part:IsA("BasePart") then return part end
     end
@@ -292,7 +324,7 @@ local function reconcile(model)
     if not controller and hints and hints.animation and hints.animation:IsDescendantOf(model)
         and hints.animation:FindFirstAncestorWhichIsA("Model") == model then controller = hints.animation end
     if not Config.DetectAnimationControllers then controller = nil end
-    local isNPC = hum ~= nil or controller ~= nil or hasNPCTag(model)
+    local isNPC = hum ~= nil or controller ~= nil or hasNPCTag(model) or isCreaturePart(model) or isCreatureVisual(model) or isKnownMonster(model) or isStructuralNPC(model, hints)
     if not player and Config.IsNPC then
         local ok, result = pcall(Config.IsNPC, model)
         if ok and result ~= nil then isNPC = result == true end
@@ -310,10 +342,9 @@ local function reconcile(model)
     local head = model:FindFirstChild("Head")
     d.anchor = head and head:IsA("BasePart") and head or root
     d.anchorIsHead = d.anchor == head
-    d.labelTop = 2.5
+    d.labelTop = model:IsA("BasePart") and model.Size.Y*0.5 or 2.5
     if not d.anchorIsHead then
-        -- Headless rigs: calculate their world-space top on structural changes.
-        -- No per-frame bounding-box scans are needed for ordinary characters.
+
         local ok, cf, size = pcall(function() return model:GetBoundingBox() end)
         if ok then
             local halfY = (math.abs(cf.RightVector.Y) * size.X + math.abs(cf.UpVector.Y) * size.Y
@@ -325,7 +356,7 @@ local function reconcile(model)
     teamMemo[model] = nil
 end
 local function mark(model)
-    if not alive or not model or not model:IsA("Model") then return end
+    if not alive or not model or not (model:IsA("Model") or isCreaturePart(model)) then return end
     dirty[model] = true
     if flushScheduled then return end
     flushScheduled = true
@@ -345,22 +376,28 @@ local function mark(model)
 end
 local function markAncestors(obj)
     local node = obj
-    -- Only model ancestry is visited; never recursively scan Workspace per event.
+
     while node and node ~= workspace and node ~= game do
-        if node:IsA("Model") then mark(node) end
+        if node:IsA("Model") or isCreaturePart(node) then mark(node) end
         node = node.Parent
     end
 end
 local function relevant(obj)
-    return obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Humanoid") or obj:IsA("AnimationController")
+    return obj:IsA("Model") or obj:IsA("BasePart") or obj:IsA("Humanoid") or obj:IsA("AnimationController") or obj:IsA("Bone")
 end
 local function observeController(obj, removing)
-    local kind = obj:IsA("Humanoid") and "hum" or obj:IsA("AnimationController") and "animation" or nil
+    local kind = obj:IsA("Humanoid") and "hum" or obj:IsA("AnimationController") and "animation"
+        or obj:IsA("Bone") and "bones" or anatomyRole(obj) and "anatomy" or nil
     if not kind then return end
     local model = obj:FindFirstAncestorWhichIsA("Model")
     if not model then return end
     local hints = controllerHints[model]
     if not hints and not removing then hints = {}; controllerHints[model] = hints end
+    if hints and (kind == "bones" or kind == "anatomy") then
+        if not hints[kind] then hints[kind] = {} end
+        hints[kind][obj] = not removing and true or nil
+        return
+    end
     if hints then
         if not removing then hints[kind] = obj elseif hints[kind] == obj then hints[kind] = nil end
     end
@@ -379,7 +416,7 @@ local function bindPlayer(player)
         characters[character] = player
         teamMemo[player] = nil
         mark(character)
-        -- Existing nested NPC-like rigs must no longer be treated as NPCs.
+
         for model in pairs(entities) do if model:IsDescendantOf(character) then mark(model) end end
     end
     connect(player.CharacterAdded, added, list)
@@ -419,8 +456,7 @@ local function createVisual(d)
     tag.Adornee = d.anchor
     d.labelWidth, d.labelHeight = Config.LabelWidth, Config.NameTextSize*2+6
     tag.Size = UDim2.fromOffset(d.labelWidth, d.labelHeight)
-    -- Bottom-center anchoring keeps every text line above the attachment point,
-    -- including when the character becomes small in the distance.
+
     tag.SizeOffset = Vector2.new(0, 0.5)
     tag.LightInfluence = 0
     tag.Parent = rootGui
@@ -456,6 +492,37 @@ local function positionLabel(d)
     end
 end
 
+local function pairCreatureMarkers()
+    local markers, bodies, edges = {}, {}, {}
+    for model, d in pairs(entities) do
+        d.duplicateVisual = false
+        if isCreatureVisual(model) then
+            table.insert(bodies,d)
+        elseif isCreaturePart(model) and model.Parent and model.Parent.Name == "Creatures"
+            and model.Parent.Parent and model.Parent.Parent.Name == "StillWater" then
+            table.insert(markers,d)
+        end
+    end
+    for _, marker in ipairs(markers) do
+        local kind = marker.model.Name:match("^Creature(%d+)")
+        for _, body in ipairs(bodies) do
+            if kind == body.model.Name:match("^CreatureVisual(%d+)$") then
+                local delta = marker.root.Position - body.root.Position
+                local distance = delta:Dot(delta)
+                if distance <= 24*24 then table.insert(edges,{marker=marker,body=body,distance=distance}) end
+            end
+        end
+    end
+    table.sort(edges,function(a,b) return a.distance < b.distance end)
+    local used = {}
+    for _, edge in ipairs(edges) do
+        if not used[edge.marker] and not used[edge.body] then
+            edge.marker.duplicateVisual = true
+            used[edge.marker],used[edge.body] = true,true
+        end
+    end
+end
+
 local status, refreshUI
 local function update()
     if not alive then return end
@@ -465,13 +532,14 @@ local function update()
     local now = os.clock()
     local localTeam = Config.TeamMode ~= "Off" and resolveTeam(LocalPlayer, character, now) or nil
     local limitSq = Config.MaxDistance * Config.MaxDistance
+    pairCreatureMarkers()
     for model, d in pairs(entities) do
         count = count + 1
-        if not model:IsDescendantOf(workspace) or not d.root:IsDescendantOf(model)
-            or not d.anchor:IsDescendantOf(model) then
+        if not model:IsDescendantOf(workspace) or (d.root ~= model and not d.root:IsDescendantOf(model))
+            or (d.anchor ~= model and not d.anchor:IsDescendantOf(model)) then
             dropVisual(d)
             mark(model)
-        elseif enabled and root and (d.player and Config.ShowPlayers or not d.player and Config.ShowNPCs)
+        elseif enabled and root and not d.duplicateVisual and (d.player and Config.ShowPlayers or not d.player and Config.ShowNPCs)
             and (Config.ShowDead or not d.hum or d.hum.Health > 0) then
             local offset = root.Position - d.root.Position
             local distanceSq = offset:Dot(offset)
@@ -573,7 +641,6 @@ connect(rootGui.Destroying, unload)
 runtime = {Stop=unload}
 pcall(function() environment[registryKey] = runtime end)
 
--- Compact, scrollable UI. Menu visibility does not control marker visibility.
 local accent = Color3.fromRGB(99, 179, 255)
 local function corner(obj, radius)
     local c = Instance.new("UICorner")
@@ -611,7 +678,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -24, 0, 38)
 title.Position = UDim2.fromOffset(12, 4)
 title.BackgroundTransparency = 1
-title.Text = "BETTER ESP  /  4.4"
+title.Text = "BETTER ESP  /  4.6"
 title.TextColor3 = accent
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -657,6 +724,13 @@ end
 control("ESP", function() return enabled and "ON" or "OFF" end, function() enabled = not enabled end)
 toggle("Players", "ShowPlayers")
 toggle("NPCs", "ShowNPCs")
+for _, option in ipairs({{"Skinned NPC rigs", "DetectSkinnedRigs"}, {"Body-part NPC rigs", "DetectBodyAssemblies"}}) do
+    local label, key = option[1], option[2]
+    control(label, function() return Config[key] and "ON" or "OFF" end, function()
+        Config[key] = not Config[key]
+        for model in pairs(controllerHints) do mark(model) end
+    end)
+end
 toggle("Health", "ShowHealth")
 toggle("Distance (studs)", "ShowDistance")
 toggle("Names above characters", "ShowNames")
@@ -671,7 +745,7 @@ toggle("Show team source", "ShowTeamSource")
 toggle("Respect walls", "Occluded")
 control("Animation-only NPCs", function() return Config.DetectAnimationControllers and "ON" or "OFF" end, function()
     Config.DetectAnimationControllers = not Config.DetectAnimationControllers
-    -- One explicit rescan is required when changing recognition rules.
+
     task.spawn(function()
         for _, obj in ipairs(workspace:GetDescendants()) do
             if not alive then return end
@@ -709,7 +783,7 @@ stopButton.LayoutOrder = order
 stopButton.TextColor3 = Color3.fromRGB(255, 130, 140)
 connect(stopButton.Activated, unload)
 connect(menuButton.Activated, function() panel.Visible = not panel.Visible end)
--- Drag from the title only; controls remain easy to tap and scroll.
+
 local dragInput, dragStart, panelStart
 connect(title.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -744,13 +818,14 @@ connect(RunService.Heartbeat, function(dt)
     end
 end)
 
--- Subscribe first, scan once, and yield in batches so initial loading stays responsive.
 task.spawn(function()
     local snapshot = workspace:GetDescendants()
     for i, obj in ipairs(snapshot) do
         if not alive then return end
-        if obj:IsA("Humanoid") or obj:IsA("AnimationController") then observeController(obj, false); markAncestors(obj) end
-        if obj:IsA("Model") and (hasNPCTag(obj) or Config.IsNPC) then mark(obj) end
+        if obj:IsA("Humanoid") or obj:IsA("AnimationController") or obj:IsA("Bone") or anatomyRole(obj) then
+            observeController(obj, false); markAncestors(obj)
+        end
+        if isCreaturePart(obj) or (obj:IsA("Model") and (hasNPCTag(obj) or isCreatureVisual(obj) or isKnownMonster(obj) or Config.IsNPC)) then mark(obj) end
         if i % 1000 == 0 then task.wait() end
     end
     if alive then update() end
